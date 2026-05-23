@@ -1,4 +1,4 @@
-﻿package nmap
+package nmap
 
 import (
 	"fmt"

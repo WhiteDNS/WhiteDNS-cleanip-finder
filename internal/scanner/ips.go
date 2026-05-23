@@ -991,7 +991,7 @@ func (s *Scanner) probeHTTPS(ctx context.Context, ip string, port int, opts IPSc
 
 	domains := normalizeProbeDomains(opts.ProbeDomainsHTTPS)
 	if len(domains) == 0 {
-				domains = append([]string(nil), defaultProbeDomains...)
+		domains = append([]string(nil), defaultProbeDomains...)
 	}
 	type domainOutcome struct {
 		result   *IPScanResult

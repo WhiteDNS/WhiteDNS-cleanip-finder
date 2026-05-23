@@ -49,12 +49,12 @@ type ProxyScanOptions struct {
 }
 
 type ProxyScanResult struct {
-	Protocol string
-	Endpoint string
-	Latency  time.Duration
+	Protocol     string
+	Endpoint     string
+	Latency      time.Duration
 	DownloadKBps float64
 	UploadKBps   float64
-	Tags     []string
+	Tags         []string
 }
 
 type proxyVerifier interface {
@@ -392,7 +392,7 @@ func (s *Scanner) scanProxyCandidatesWave3(candidates []string, maxTimeout time.
 					Latency:  time.Since(start),
 					Tags:     s.profileProxyTags(ep, httpVerifier{}, maxTimeout),
 				}
-					result.DownloadKBps, result.UploadKBps = proxyTransferBenchmark(ep, httpVerifier{}, maxTimeout)
+				result.DownloadKBps, result.UploadKBps = proxyTransferBenchmark(ep, httpVerifier{}, maxTimeout)
 				mu.Lock()
 				verified = append(verified, result)
 				mu.Unlock()
@@ -579,7 +579,6 @@ func (s *Scanner) profileProxyTags(endpoint string, verifier proxyVerifier, time
 	}
 	return tags
 }
-
 
 func probeProxyHost(endpoint string, verifier proxyVerifier, host string, timeout time.Duration) bool {
 	switch verifier.(type) {

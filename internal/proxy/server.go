@@ -1,4 +1,4 @@
-﻿package proxy
+package proxy
 
 import (
 	"bufio"

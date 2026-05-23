@@ -181,7 +181,7 @@ func probeTransportSite(ctx context.Context, site string, timeout time.Duration)
 	}
 
 	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		TLSClientConfig:    &tls.Config{InsecureSkipVerify: true},
 		DisableCompression: true,
 	}
 	client := &http.Client{Transport: transport, Timeout: timeout}
@@ -225,14 +225,14 @@ func defaultProxyTransferBenchmark(endpoint string, verifier proxyVerifier, time
 func benchmarkHTTPClientForProxy(endpoint string, verifier proxyVerifier, timeout time.Duration) (*http.Client, error) {
 	transport := &http.Transport{
 		TLSClientConfig:       &tls.Config{InsecureSkipVerify: true},
-		DisableCompression:     true,
-		TLSHandshakeTimeout:    timeout,
-		ResponseHeaderTimeout:  timeout,
-		ExpectContinueTimeout:  timeout,
-		MaxIdleConns:           2,
-		MaxIdleConnsPerHost:    2,
-		IdleConnTimeout:        timeout,
-		ForceAttemptHTTP2:      false,
+		DisableCompression:    true,
+		TLSHandshakeTimeout:   timeout,
+		ResponseHeaderTimeout: timeout,
+		ExpectContinueTimeout: timeout,
+		MaxIdleConns:          2,
+		MaxIdleConnsPerHost:   2,
+		IdleConnTimeout:       timeout,
+		ForceAttemptHTTP2:     false,
 	}
 
 	switch verifier.(type) {

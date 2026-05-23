@@ -55,7 +55,7 @@ func TestScanIPsWithProgressLocalHTTP(t *testing.T) {
 	}), Timeout: 2 * time.Second}
 
 	result := s.probeIP(context.Background(), "127.0.0.1", 8080, IPScanOptions{
-		Timeout:          2 * time.Second,
+		Timeout:           2 * time.Second,
 		ProbeDomainsHTTP:  []string{"example.com", "gemini.google.com"},
 		ProbeDomainsHTTPS: []string{"example.com", "gemini.google.com"},
 	})
@@ -81,7 +81,7 @@ func TestScanIPsRejectsSingleNoisyHitAcrossMultipleDomains(t *testing.T) {
 	}), Timeout: 2 * time.Second}
 
 	result := s.probeIP(context.Background(), "127.0.0.1", 8080, IPScanOptions{
-		Timeout:          2 * time.Second,
+		Timeout:           2 * time.Second,
 		ProbeDomainsHTTP:  []string{"example.com", "instagram.com"},
 		ProbeDomainsHTTPS: []string{"example.com", "instagram.com"},
 	})

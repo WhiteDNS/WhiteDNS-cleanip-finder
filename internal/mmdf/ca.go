@@ -1,4 +1,4 @@
-﻿package mmdf
+package mmdf
 
 import (
 	"crypto/rand"

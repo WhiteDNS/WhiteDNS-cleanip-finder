@@ -146,7 +146,7 @@ func (a *App) startGoProxy(mode string) {
 
 func drawHeader(cfg config.Config, mode string) {
 	clearScreen()
-    fmt.Println("------------------------------------------------------------")
+	fmt.Println("------------------------------------------------------------")
 	fmt.Println(" WHITEDNS v9.2.0 ")
 	fmt.Println(" developed by ashentajir ")
 	fmt.Println("------------------------------------------------------------")
