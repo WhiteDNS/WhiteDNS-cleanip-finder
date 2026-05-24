@@ -17,6 +17,7 @@ func DefaultDomains() []string {
 		"static.cloudflareinsights.com",
 		"sciencedirect.com",
 		"e7.c.lencr.org",
+		"hcaptcha.com",
 		"serverless.hcaptcha.com",
 		"emails.github.com",
 	}
@@ -83,6 +84,9 @@ func SaveCustom(dataDir string, domains []string) error {
 }
 
 // GetDomains returns merged default + custom domains (unique, sorted).
+// Duplicate entries across the built-in list and custom file are intentionally
+// deduplicated so built-in defaults keep precedence and users cannot force
+// repeated probes for the same hostname.
 func GetDomains(dataDir string) []string {
 	def := DefaultDomains()
 	custom := LoadCustom(dataDir)

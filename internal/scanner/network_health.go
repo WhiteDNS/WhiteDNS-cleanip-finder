@@ -39,8 +39,8 @@ var proxyTransferBenchmark = defaultProxyTransferBenchmark
 const (
 	defaultTransportHealthInterval = 8 * time.Second
 	defaultTransportPauseSleep     = 3 * time.Second
-	defaultTransportHealthAttempts  = 2
-	defaultTransportHealthRetryGap  = 200 * time.Millisecond
+	defaultTransportHealthAttempts = 2
+	defaultTransportHealthRetryGap = 200 * time.Millisecond
 )
 
 type TransportHealthSummary struct {
@@ -230,6 +230,7 @@ func probeTransportSite(ctx context.Context, site string, timeout time.Duration)
 }
 
 func defaultProxyTransferBenchmark(endpoint string, verifier proxyVerifier, timeout time.Duration) (float64, float64) {
+	// Run multiple short attempts and take the best non-zero observed values.
 	benchmarkTimeout := timeout
 	if benchmarkTimeout < 8*time.Second {
 		benchmarkTimeout = 8 * time.Second
@@ -238,17 +239,32 @@ func defaultProxyTransferBenchmark(endpoint string, verifier proxyVerifier, time
 		benchmarkTimeout = 15 * time.Second
 	}
 
-	client, err := benchmarkHTTPClientForProxy(endpoint, verifier, benchmarkTimeout)
-	if err != nil {
-		return 0, 0
+	// Try up to 2 attempts to reduce flakiness; take the best results.
+	attempts := 2
+	var bestDown float64
+	var bestUp float64
+	for i := 0; i < attempts; i++ {
+		client, err := benchmarkHTTPClientForProxy(endpoint, verifier, benchmarkTimeout)
+		if err != nil {
+			time.Sleep(150 * time.Millisecond)
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), benchmarkTimeout)
+		down := benchmarkProxyDownload(ctx, client)
+		up := benchmarkProxyUpload(ctx, client)
+		cancel()
+		if down > bestDown {
+			bestDown = down
+		}
+		if up > bestUp {
+			bestUp = up
+		}
+		if bestDown > 0 && bestUp > 0 {
+			break
+		}
+		time.Sleep(150 * time.Millisecond)
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), benchmarkTimeout)
-	defer cancel()
-
-	downloadKBps := benchmarkProxyDownload(ctx, client)
-	uploadKBps := benchmarkProxyUpload(ctx, client)
-	return downloadKBps, uploadKBps
+	return bestDown, bestUp
 }
 
 func benchmarkHTTPClientForProxy(endpoint string, verifier proxyVerifier, timeout time.Duration) (*http.Client, error) {
@@ -283,44 +299,88 @@ func benchmarkHTTPClientForProxy(endpoint string, verifier proxyVerifier, timeou
 }
 
 func benchmarkProxyDownload(ctx context.Context, client *http.Client) float64 {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://speed.cloudflare.com/__down?bytes=262144", nil)
-	if err != nil {
-		return 0
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	started := time.Now()
-	response, err := client.Do(request)
-	if err != nil {
-		return 0
+	attempts := 2
+	var best float64
+	for i := 0; i < attempts; i++ {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://speed.cloudflare.com/__down?bytes=262144", nil)
+		if err != nil {
+			return 0
+		}
+		started := time.Now()
+		response, err := client.Do(request)
+		if err != nil {
+			// retry
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		func() {
+			defer response.Body.Close()
+			// accept successful or redirect statuses (2xx,3xx)
+			if response.StatusCode < 200 || response.StatusCode >= 400 {
+				return
+			}
+			bytesRead, _ := io.Copy(io.Discard, response.Body)
+			seconds := time.Since(started).Seconds()
+			if bytesRead <= 0 || seconds <= 0 {
+				return
+			}
+			val := float64(bytesRead) / 1024.0 / seconds
+			if val > best {
+				best = val
+			}
+		}()
+		if best > 0 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	defer response.Body.Close()
-	bytesRead, _ := io.Copy(io.Discard, response.Body)
-	seconds := time.Since(started).Seconds()
-	if bytesRead <= 0 || seconds <= 0 {
-		return 0
-	}
-	return float64(bytesRead) / 1024.0 / seconds
+	return best
 }
 
 func benchmarkProxyUpload(ctx context.Context, client *http.Client) float64 {
-	body := bytes.NewReader(make([]byte, 262144))
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://speed.cloudflare.com/__up", body)
-	if err != nil {
-		return 0
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	request.Header.Set("Content-Type", "application/octet-stream")
-	request.Header.Set("Content-Length", strconv.Itoa(262144))
-	started := time.Now()
-	response, err := client.Do(request)
-	if err != nil {
-		return 0
+	attempts := 2
+	var best float64
+	for i := 0; i < attempts; i++ {
+		body := bytes.NewReader(make([]byte, 262144))
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://speed.cloudflare.com/__up", body)
+		if err != nil {
+			return 0
+		}
+		request.Header.Set("Content-Type", "application/octet-stream")
+		request.Header.Set("Content-Length", strconv.Itoa(262144))
+		started := time.Now()
+		response, err := client.Do(request)
+		if err != nil {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		func() {
+			defer response.Body.Close()
+			if response.StatusCode < 200 || response.StatusCode >= 400 {
+				return
+			}
+			_, _ = io.Copy(io.Discard, response.Body)
+			seconds := time.Since(started).Seconds()
+			if seconds <= 0 {
+				return
+			}
+			val := 256.0 / seconds
+			if val > best {
+				best = val
+			}
+		}()
+		if best > 0 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	defer response.Body.Close()
-	_, _ = io.Copy(io.Discard, response.Body)
-	seconds := time.Since(started).Seconds()
-	if seconds <= 0 {
-		return 0
-	}
-	return 256.0 / seconds
+	return best
 }
 
 func dialSOCKS5Proxy(ctx context.Context, proxyEndpoint, targetAddr string, timeout time.Duration) (net.Conn, error) {

@@ -18,11 +18,21 @@ func ProbeOne(ip, hostname string, port int, timeout time.Duration) ProbeResult 
 	r := ProbeResult{IP: ip, Hostname: hostname, Port: port, ScannedAt: time.Now()}
 	start := time.Now()
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	dialer := &net.Dialer{}
-	conn, err := dialer.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", ip, port))
+	// allow a couple of small retries for transient network failures
+	attempts := 2
+	var conn net.Conn
+	var err error
+	for attempt := 0; attempt < attempts; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		dialer := &net.Dialer{}
+		conn, err = dialer.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", ip, port))
+		cancel()
+		if err == nil {
+			break
+		}
+		// small backoff before retrying
+		time.Sleep(100 * time.Millisecond)
+	}
 	if err != nil {
 		r.Error = err.Error()
 		r.Success = false
@@ -33,16 +43,72 @@ func ProbeOne(ip, hostname string, port int, timeout time.Duration) ProbeResult 
 	// ensure close on exit
 	defer conn.Close()
 
+	remaining := timeout - time.Since(start)
+	if remaining <= 0 {
+		r.Error = "timeout before TLS"
+		r.Success = false
+		r.LatencyMs = float64(time.Since(start).Milliseconds())
+		return r
+	}
+
+	// Try handshake with provided SNI, if it fails try one more time without SNI
 	tlsConn := tls.Client(conn, &tls.Config{
 		ServerName:         hostname,
 		InsecureSkipVerify: true,
 	})
-	// set deadline from remaining context
-	_ = tlsConn.SetDeadline(time.Now().Add(timeout))
+	_ = tlsConn.SetDeadline(time.Now().Add(remaining))
 	if err := tlsConn.Handshake(); err != nil {
-		r.Error = err.Error()
-		r.Success = false
+		// try once without ServerName in case the server rejects SNI
+		// reopen raw TCP connection for second attempt
+		remaining = timeout - time.Since(start)
+		if remaining <= 0 {
+			r.Error = "timeout before TLS retry"
+			r.Success = false
+			r.LatencyMs = float64(time.Since(start).Milliseconds())
+			return r
+		}
+		conn2, err2 := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, port), timeout)
+		if err2 != nil {
+			r.Error = err.Error()
+			r.Success = false
+			r.LatencyMs = float64(time.Since(start).Milliseconds())
+			return r
+		}
+		defer conn2.Close()
+		tlsConn2 := tls.Client(conn2, &tls.Config{InsecureSkipVerify: true})
+		_ = tlsConn2.SetDeadline(time.Now().Add(remaining))
+		if err3 := tlsConn2.Handshake(); err3 != nil {
+			r.Error = err3.Error()
+			r.Success = false
+			r.LatencyMs = float64(time.Since(start).Milliseconds())
+			return r
+		}
+		cs := tlsConn2.ConnectionState()
+		r.Success = true
 		r.LatencyMs = float64(time.Since(start).Milliseconds())
+		r.TLSVersion = tlsVersionString(cs.Version)
+		if len(cs.PeerCertificates) > 0 {
+			cert := cs.PeerCertificates[0]
+			if cert.Subject.CommonName != "" {
+				r.CertCN = cert.Subject.CommonName
+			}
+			if cert.Issuer.CommonName != "" {
+				r.CertIssuer = cert.Issuer.CommonName
+			} else if len(cert.Issuer.Organization) > 0 {
+				r.CertIssuer = strings.Join(cert.Issuer.Organization, ",")
+			}
+		}
+		// probe HTTP over the established TLS connection
+		remaining = timeout - time.Since(start)
+		if remaining <= 0 {
+			r.Error = "timeout before HTTP probe"
+			r.Success = false
+			r.LatencyMs = float64(time.Since(start).Milliseconds())
+			return r
+		}
+		status, server := probeHTTP(tlsConn2, hostname, remaining)
+		r.HTTPStatus = status
+		r.ServerHeader = server
 		return r
 	}
 
@@ -64,12 +130,16 @@ func ProbeOne(ip, hostname string, port int, timeout time.Duration) ProbeResult 
 	}
 
 	// probe HTTP over the established TLS connection
-	status, server := probeHTTP(tlsConn, hostname, timeout)
+	remaining = timeout - time.Since(start)
+	if remaining <= 0 {
+		r.Error = "timeout before HTTP probe"
+		r.Success = false
+		r.LatencyMs = float64(time.Since(start).Milliseconds())
+		return r
+	}
+	status, server := probeHTTP(tlsConn, hostname, remaining)
 	r.HTTPStatus = status
 	r.ServerHeader = server
-
-	// close the TLS connection
-	_ = tlsConn.Close()
 	return r
 }
 
@@ -102,37 +172,40 @@ func probeHTTP(tlsConn *tls.Conn, hostname string, timeout time.Duration) (int, 
 	}
 
 	r := bufio.NewReader(tlsConn)
-	// read status line
-	line, err := r.ReadString('\n')
-	if err != nil {
-		return 0, ""
-	}
-	line = strings.TrimSpace(line)
-	// e.g. HTTP/1.1 200 OK
-	parts := strings.SplitN(line, " ", 3)
+	// read status line(s) and find a line that starts with HTTP/
 	statusCode := 0
-	if len(parts) >= 2 {
-		fmt.Sscanf(parts[1], "%d", &statusCode)
-	}
-
-	// read headers until blank line
 	serverHeader := ""
-	for {
-		hline, err := r.ReadString('\n')
+	for i := 0; i < 4; i++ {
+		line, err := r.ReadString('\n')
 		if err != nil {
 			break
 		}
-		hline = strings.TrimSpace(hline)
-		if hline == "" {
-			break
-		}
-		kv := strings.SplitN(hline, ":", 2)
-		if len(kv) == 2 {
-			key := strings.TrimSpace(kv[0])
-			val := strings.TrimSpace(kv[1])
-			if strings.EqualFold(key, "Server") {
-				serverHeader = val
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "HTTP/") {
+			parts := strings.SplitN(line, " ", 3)
+			if len(parts) >= 2 {
+				fmt.Sscanf(parts[1], "%d", &statusCode)
 			}
+			// now read headers
+			for {
+				hline, err := r.ReadString('\n')
+				if err != nil {
+					break
+				}
+				hline = strings.TrimSpace(hline)
+				if hline == "" {
+					break
+				}
+				kv := strings.SplitN(hline, ":", 2)
+				if len(kv) == 2 {
+					key := strings.TrimSpace(kv[0])
+					val := strings.TrimSpace(kv[1])
+					if strings.EqualFold(key, "Server") {
+						serverHeader = val
+					}
+				}
+			}
+			break
 		}
 	}
 	return statusCode, serverHeader
@@ -157,13 +230,15 @@ func RunScan(cfg ScanConfig, resultCh chan<- ProbeResult, progressCh chan<- int)
 		cfg.Port = 443
 	}
 	if cfg.TimeoutSec <= 0 {
-		cfg.TimeoutSec = 5.0
+		// use a slightly higher default for SNI/TLS probing to avoid spurious timeouts
+		cfg.TimeoutSec = 8.0
 	}
 	if cfg.Concurrency <= 0 {
 		cfg.Concurrency = 50
 	}
 
-	// expand targets into IP list
+	// expand targets into IP list.
+	// Callers must pass open channels; RunScan owns and closes resultCh/progressCh.
 	ips := expandTargets(cfg.Targets)
 	if len(ips) == 0 {
 		return
@@ -226,8 +301,21 @@ func expandTargets(raw []string) []string {
 				// skip too large
 				continue
 			}
-			// iterate from network ip to broadcast
-			for cur := ipToBigInt(ip); cur.Cmp(ipToBigInt(lastIP(ipnet))) <= 0; cur.Add(cur, big.NewInt(1)) {
+			startIP := ipToBigInt(ipnet.IP)
+			endIP := ipToBigInt(lastIP(ipnet))
+			if count == 1 {
+				if ipStr := bigIntToIP(startIP, ip.To4() == nil); ipStr != "" {
+					if _, ok := seen[ipStr]; !ok {
+						seen[ipStr] = struct{}{}
+						out = append(out, ipStr)
+					}
+				}
+				continue
+			}
+			// iterate only usable hosts: exclude network and broadcast addresses
+			firstHost := new(big.Int).Add(startIP, big.NewInt(1))
+			lastHost := new(big.Int).Sub(endIP, big.NewInt(1))
+			for cur := firstHost; cur.Cmp(lastHost) <= 0; cur.Add(cur, big.NewInt(1)) {
 				ipStr := bigIntToIP(cur, ip.To4() == nil)
 				if ipStr == "" {
 					continue

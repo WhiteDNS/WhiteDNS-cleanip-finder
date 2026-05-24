@@ -268,20 +268,19 @@ func NewTUI(a *App) *tuiModel {
 		{key: "1", label: "Scan IPs", action: "scan_ips"},
 		{key: "2", label: "Scan HTTP Proxies", action: "scan"},
 		{key: "3", label: "Scan SOCKS5 Proxies", action: "scan_socks5"},
-		{key: "4", label: "Reload IP Pool", action: "reload_pool"},
-		{key: "5", label: "Manage IP Pool", action: "manage_pool"},
-		{key: "6", label: "Instant Connect", action: "instant_connect"},
-		{key: "7", label: "Force Reroute Domain", action: "force_reroute"},
-		{key: "8", label: "Inspect IPs (ASN)", action: "inspect_ip"},
-		{key: "9", label: "Export ASN IPs", action: "export_asn"},
-		{key: "a", label: "Manage Rules", action: "manage_rules"},
-		{key: "b", label: "Set Proxy Port", action: "set_proxy_port"},
-		{key: "c", label: "Autotune Scan Rates", action: "autotune"},
-		{key: "d", label: "Install MMDF CA", action: "install_mmdf_ca"},
-		{key: "e", label: "Desync Scanner", action: "desync_scanner"},
-		{key: "s", label: "SNI Scanner", action: "sni_scanner"},
-		{key: "t", label: "TLS Hostname Probe", action: "tls_probe"},
-		{key: "T", label: "Manage TLS Probe Domains", action: "manage_tls_probe"},
+		{key: "4", label: "SNI Scanner (TLS Hostname Probe)", action: "sni_scanner"},
+		{key: "5", label: "Reload IP Pool", action: "reload_pool"},
+		{key: "6", label: "Manage IP Pool", action: "manage_pool"},
+		{key: "7", label: "Instant Connect", action: "instant_connect"},
+		{key: "8", label: "Force Reroute Domain", action: "force_reroute"},
+		{key: "a", label: "Inspect IPs (ASN)", action: "inspect_ip"},
+		{key: "b", label: "Export ASN IPs", action: "export_asn"},
+		{key: "c", label: "Manage Rules", action: "manage_rules"},
+		{key: "d", label: "Set Proxy Port", action: "set_proxy_port"},
+		{key: "e", label: "Autotune Scan Rates", action: "autotune"},
+		{key: "f", label: "Install MMDF CA", action: "install_mmdf_ca"},
+		{key: "g", label: "Desync Scanner", action: "desync_scanner"},
+		{key: "M", label: "Manage SNI Probe Domains", action: "manage_tls_probe"},
 		{key: "n", label: "Configure Desync", action: "configure_desync"},
 		{key: "x", label: "Clear Cache", action: "clear_cache"},
 		{key: "w", label: "Start Proxy (White)", action: "start_proxy_white"},
@@ -1011,6 +1010,7 @@ func (m tuiModel) viewScanning(w, h int) string {
 		"reload_pool":  "Pool Reload",
 		"inspect_pool": "Pool Inspect",
 		"tls_probe":    "TLS Hostname Probe",
+		"sni_scanner":  "SNI Scanner (TLS Hostname Probe)",
 	}[m.operationType]
 	if opLabel == "" {
 		opLabel = strings.ToUpper(m.scanKind) + " Proxy Scan"
@@ -1060,7 +1060,7 @@ func (m tuiModel) viewScanning(w, h int) string {
 			}
 			localT := segF - float64(seg)
 			col := mix(gradientStops[seg], gradientStops[seg+1], localT)
-			left += lipgloss.NewStyle().Foreground(lipgloss.Color(col)).Render("#")
+			left += lipgloss.NewStyle().Foreground(lipgloss.Color(col)).Render("█")
 		}
 	}
 	empty := sDim.Render(strings.Repeat("-", barW-filled))
@@ -1172,6 +1172,7 @@ func (m tuiModel) viewScanResults(w, h int) string {
 		"reload_pool":  "Pool Reload",
 		"inspect_pool": "Pool Inspect",
 		"tls_probe":    "TLS Probe Results",
+		"sni_scanner":  "SNI Scanner Results (TLS Hostname Probe)",
 	}[m.operationType]
 	if opLabel == "" {
 		opLabel = "Scan Results"
@@ -1181,7 +1182,7 @@ func (m tuiModel) viewScanResults(w, h int) string {
 	if m.scanErr != nil {
 		body.WriteString(sError.Render("x "+m.scanErr.Error()) + "\n")
 	} else {
-		body.WriteString(sSuccess.Render(fmt.Sprintf("  OK  Found %d results\n\n", len(m.scanResults))))
+		body.WriteString(sSuccess.Render(fmt.Sprintf("  Found %d results\n\n", len(m.scanResults))))
 		start := m.cursor - visibleRows + 1
 		if start < 0 {
 			start = 0
@@ -1216,7 +1217,7 @@ func (m tuiModel) viewScanResults(w, h int) string {
 			if i == m.cursor {
 				body.WriteString(sSelected.Render(r) + "\n")
 			} else {
-				body.WriteString(sSuccess.Render("  OK "+r) + "\n")
+				body.WriteString("  " + r + "\n")
 			}
 		}
 		if len(m.scanResults) > visibleRows {
@@ -1367,11 +1368,8 @@ func (m tuiModel) activateMenuItem() (tuiModel, tea.Cmd) {
 		m.addLog("Starting Desync Scanner...")
 		return m, m.cmdBridgeAction("desync_scanner")
 	case "sni_scanner":
-		m.addLog("Starting SNI Scanner...")
-		return m, m.cmdBridgeAction("sni_scanner")
-	case "tls_probe":
-		m.addLog("TLS Hostname Probe selected")
-		m.gotoScanMode("tls_probe", "tls_probe")
+		m.addLog("SNI Scanner (TLS Hostname Probe) selected")
+		m.gotoScanMode("sni_scanner", "sni_scanner")
 	case "manage_tls_probe":
 		m.pushScreen(screenManageTLSProbe)
 		m.tiStep = 1
@@ -1699,7 +1697,7 @@ func (m tuiModel) handleSelectPortsScreen(msg tea.Msg) (tuiModel, tea.Cmd) {
 			m.scanConfig.PortsString = preset.ports
 			m.scanConfig.Ports = parsePorts(m.scanConfig.PortsString)
 		}
-		if m.operationType == "scan_ips" || m.operationType == "tls_probe" {
+		if m.operationType == "scan_ips" || m.operationType == "sni_scanner" {
 			m.pushScreen(screenSelectConcurrency)
 			m.cursor = 1
 		} else {
@@ -1779,15 +1777,15 @@ func (m tuiModel) handleSelectConcurrencyScreen(msg tea.Msg) (tuiModel, tea.Cmd)
 			m.addLog(fmt.Sprintf("Scan log file: %s", m.scanLogPath))
 			return m, m.cmdPoolOperation("scan_ips", targets)
 		}
-		if m.operationType == "tls_probe" {
+		if m.operationType == "sni_scanner" {
 			endpointCount := len(targets) * len(ports)
 			timeout := scanTimeoutBudget(endpointCount)
-			m.startScanLogFile("tls_probe", targets, ports, m.scanConfig.Concurrency, timeout)
+			m.startScanLogFile("sni_scanner", targets, ports, m.scanConfig.Concurrency, timeout)
 			m.app.Scanner.SetTargetPorts(ports)
 			m.scanMsgCh = make(chan tea.Msg, 65536)
 			m.addLog(fmt.Sprintf("Starting TLS Hostname Probe: targets=%d ports=%d concurrency=%d", len(targets), len(ports), m.scanConfig.Concurrency))
 			m.addLog(fmt.Sprintf("Scan log file: %s", m.scanLogPath))
-			return m, m.cmdPoolOperation("tls_probe", targets)
+			return m, m.cmdPoolOperation("sni_scanner", targets)
 		}
 		timeout := time.Duration(6+m.scanConfig.Concurrency/500) * time.Second
 		if timeout > 30*time.Second {
@@ -2099,12 +2097,12 @@ func (m tuiModel) handlePoolOperationComplete(msg poolOperationCompleteMsg) (tui
 		m.writeScanLogLine(fmt.Sprintf("[COMPLETE] %s failed: %v", msg.operationType, msg.err))
 	} else {
 		m.writeScanLogLine(fmt.Sprintf("[COMPLETE] %s done: %d items in %s", msg.operationType, len(m.scanResults), msg.duration))
-		if msg.operationType == "scan_ips" || msg.operationType == "tls_probe" {
+		if msg.operationType == "scan_ips" || msg.operationType == "sni_scanner" {
 			scanKind := msg.operationType
 			if scanKind == "scan_ips" {
 				scanKind = "ipscan"
-			} else if scanKind == "tls_probe" {
-				scanKind = "tlsprobe"
+			} else if scanKind == "sni_scanner" {
+				scanKind = "sniscan"
 			}
 			if path, err := saveScanOutputResults(m.app.DataDir, scanKind, m.scanResults); err != nil {
 				m.addLog(fmt.Sprintf("Failed to save scan output: %v", err))
@@ -2225,7 +2223,7 @@ func (m tuiModel) cmdScanWithConfig(targets []string, cfg scanConfig, scanKind s
 }
 
 func (m tuiModel) cmdPoolOperation(opType string, asnNetworks []string) tea.Cmd {
-	if opType == "scan_ips" || opType == "tls_probe" {
+	if opType == "scan_ips" || opType == "sni_scanner" {
 		cfg := m.scanConfig
 		scannerInst := m.app.Scanner
 		ch := m.scanMsgCh
@@ -2259,13 +2257,11 @@ func (m tuiModel) cmdPoolOperation(opType string, asnNetworks []string) tea.Cmd 
 					Timeout:       timeout,
 					EndpointCount: endpointCount,
 				}
-				if opType == "tls_probe" {
+				if opType == "sni_scanner" {
+					// SNI scanner uses tlsprobe hostnames for the TLS hostname probe path.
 					domains := tlsprobe.GetDomains(m.app.DataDir)
 					opts.ProbeDomainsHTTPS = append([]string(nil), domains...)
 					opts.ProbeDomainsHTTP = append([]string(nil), domains...)
-				} else {
-					opts.ProbeDomainsHTTP = []string{"instagram.com", "chatgpt.com", "web.telegram.org", "reddit.com", "claude.ai", "pages.dev", "workers.dev", "gemini.google.com", "notebooklm.google.com"}
-					opts.ProbeDomainsHTTPS = []string{"instagram.com", "chatgpt.com", "web.telegram.org", "reddit.com", "claude.ai", "pages.dev", "workers.dev", "gemini.google.com", "notebooklm.google.com"}
 				}
 
 				scannerInst.SetLogCallback(func(msg string) {
@@ -2298,8 +2294,8 @@ func (m tuiModel) cmdPoolOperation(opType string, asnNetworks []string) tea.Cmd 
 					lastAt = now
 				}
 
-				if opType == "tls_probe" {
-					// Use internal tlsprobe runner for TLS hostname probing
+				if opType == "sni_scanner" {
+					// SNI scanner uses tlsprobe runner with TLS probe domains.
 					resCh := make(chan tlsprobe.ProbeResult, 1024)
 					go func() {
 						cfg := tlsprobe.ScanConfig{
@@ -2312,7 +2308,7 @@ func (m tuiModel) cmdPoolOperation(opType string, asnNetworks []string) tea.Cmd 
 						tlsprobe.RunScan(cfg, resCh, nil)
 					}()
 
-					var tlsResults []string
+					var sniResults []string
 					processed := 0
 					hits := 0
 					totalProbes := len(targets) * len(opts.ProbeDomainsHTTPS)
@@ -2336,13 +2332,15 @@ func (m tuiModel) cmdPoolOperation(opType string, asnNetworks []string) tea.Cmd 
 						case ch <- msg:
 						default:
 						}
-						tlsResults = append(tlsResults, text)
+						if pr.Success {
+							sniResults = append(sniResults, text)
+						}
 					}
 					close(ch)
-					if len(tlsResults) == 0 {
-						tlsResults = []string{"No responding IPs found"}
+					if len(sniResults) == 0 {
+						sniResults = []string{"No responding IPs found"}
 					}
-					return poolOperationCompleteMsg{operationType: opType, results: tlsResults, duration: time.Since(t0)}
+					return poolOperationCompleteMsg{operationType: opType, results: sniResults, duration: time.Since(t0)}
 				}
 
 				results, err := scannerInst.ScanIPsWithProgress(targets, opts, progressCb)
@@ -2363,80 +2361,8 @@ func (m tuiModel) cmdPoolOperation(opType string, asnNetworks []string) tea.Cmd 
 	return func() tea.Msg {
 		t0 := time.Now()
 		var results []string
-		var err error
 
 		switch opType {
-		case "scan_ips":
-			targets := asnNetworks
-			if len(targets) == 0 {
-				targets = m.scanConfig.Targets
-			}
-			ports := m.scanConfig.Ports
-			if len(ports) == 0 {
-				ports = []int{443, 2053, 2083, 2087, 2096, 8443}
-			}
-			m.app.Scanner.SetTargetPorts(ports)
-			conc := m.scanConfig.Concurrency
-			if conc <= 0 {
-				conc = 250
-			}
-			timeout := 6 * time.Second
-			if conc > 2000 {
-				timeout = 8 * time.Second
-			}
-			opts := scanner.IPScanOptions{
-				Ports:                     ports,
-				Concurrency:               conc,
-				Timeout:                   timeout,
-				ProbeDomainsHTTP:          []string{"instagram.com", "chatgpt.com", "web.telegram.org", "reddit.com", "claude.ai", "pages.dev", "workers.dev", "gemini.google.com", "notebooklm.google.com"},
-				ProbeDomainsHTTPS:         []string{"instagram.com", "chatgpt.com", "web.telegram.org", "reddit.com", "claude.ai", "pages.dev", "workers.dev", "gemini.google.com", "notebooklm.google.com"},
-				AdaptiveDomainConcurrency: m.scanConfig.AdaptiveDomainConcurrency,
-				Method:                    strings.ToLower(strings.TrimSpace(m.scanConfig.Method)),
-			}
-			results, err = m.app.Scanner.ScanIPsWithCIDR(targets, opts)
-			if err != nil {
-				return poolOperationCompleteMsg{operationType: opType, err: err, duration: time.Since(t0)}
-			}
-			if len(results) == 0 {
-				results = []string{"No responding IPs found"}
-			}
-		case "tls_probe":
-			targets := asnNetworks
-			if len(targets) == 0 {
-				targets = m.scanConfig.Targets
-			}
-			ports := m.scanConfig.Ports
-			if len(ports) == 0 {
-				ports = []int{443}
-			}
-			m.app.Scanner.SetTargetPorts(ports)
-			conc := m.scanConfig.Concurrency
-			if conc <= 0 {
-				conc = 250
-			}
-			timeout := 6 * time.Second
-			if conc > 2000 {
-				timeout = 8 * time.Second
-			}
-			domains := tlsprobe.GetDomains(m.app.DataDir)
-			opts := scanner.IPScanOptions{
-				Ports:                     ports,
-				Concurrency:               conc,
-				Timeout:                   timeout,
-				ProbeDomainsHTTP:          append([]string(nil), domains...),
-				ProbeDomainsHTTPS:         append([]string(nil), domains...),
-				AdaptiveDomainConcurrency: m.scanConfig.AdaptiveDomainConcurrency,
-				Method:                    strings.ToLower(strings.TrimSpace(m.scanConfig.Method)),
-			}
-			var err error
-			results, err = m.app.Scanner.ScanIPsWithCIDR(targets, opts)
-			if err != nil {
-				return poolOperationCompleteMsg{operationType: opType, err: err, duration: time.Since(t0)}
-			}
-			if len(results) == 0 {
-				results = []string{"No responding IPs found"}
-			}
-
 		case "reload_pool":
 			routesFile := filepath.Join(m.app.DataDir, "white_routes.txt")
 			count, err := m.app.Router.LoadRoutes(routesFile)

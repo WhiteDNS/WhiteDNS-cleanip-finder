@@ -249,6 +249,12 @@ func (s *Scanner) scanProxyCandidates(candidates []string, concurrency int, time
 						Tags:     s.profileProxyTags(endpoint, verifier, timeout),
 					}
 					result.DownloadKBps, result.UploadKBps = proxyTransferBenchmark(endpoint, verifier, timeout)
+					// Log benchmark results for diagnostics
+					if result.DownloadKBps > 0 || result.UploadKBps > 0 {
+						s.logf("[DEBUG] transfer benchmark %s down=%.1fKB/s up=%.1fKB/s\n", endpoint, result.DownloadKBps, result.UploadKBps)
+					} else {
+						s.logf("[DEBUG] transfer benchmark %s returned no throughput\n", endpoint)
+					}
 					mu.Lock()
 					verified = append(verified, result)
 					mu.Unlock()
@@ -393,6 +399,11 @@ func (s *Scanner) scanProxyCandidatesWave3(candidates []string, maxTimeout time.
 					Tags:     s.profileProxyTags(ep, httpVerifier{}, maxTimeout),
 				}
 				result.DownloadKBps, result.UploadKBps = proxyTransferBenchmark(ep, httpVerifier{}, maxTimeout)
+				if result.DownloadKBps > 0 || result.UploadKBps > 0 {
+					s.logf("[DEBUG] transfer benchmark %s down=%.1fKB/s up=%.1fKB/s\n", ep, result.DownloadKBps, result.UploadKBps)
+				} else {
+					s.logf("[DEBUG] transfer benchmark %s returned no throughput\n", ep)
+				}
 				mu.Lock()
 				verified = append(verified, result)
 				mu.Unlock()
