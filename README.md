@@ -1,96 +1,82 @@
-# WhiteDNS — Go Port (Updated)
+# WhiteDNS Go Port
 
-This repository contains the Go port of the WhiteDNS project. This README has been updated to reflect the current state: the scanner subsystem has been fully ported to Go, cross-platform builds are available, and core CLI/UI flows are functional.
+WhiteDNS Go Port is the Go implementation of WhiteDNS with native scanning, proxy workflows, and terminal UI support.
 
-## Status (May 2026)
+## Features
 
-- Project: Go port of WhiteDNS — active.
-- Scanner: Fully ported to Go (native workers, CIDR expansion, port scanning, adaptive throttling, and export features).
-- TUI: Core menu and UI flows implemented in Go (`internal/ui`) and tested.
-- Bridge: Python bridge remains for select legacy tooling where native parity is not yet required.
-- Build: Cross-platform build script produces Windows, Linux (amd64/arm64), and Termux/Android artifacts.
+- Native scanner pipeline (CIDR expansion, port probing, concurrency control, result export)
+- White routing and DPI-related workflows in terminal UI
+- TCP proxy, HTTP CONNECT tunneling, and SOCKS5 support
+- ASN-aware target handling
+- Cross-platform builds for Windows, Linux, macOS, and Termux/Android
 
-## Implemented (high level)
+## Standalone Runtime
 
-- Networking primitives: TCP proxy, HTTP CONNECT tunneling, SOCKS5 support.
-- Scanner: Complete Go scanner pipeline including:
-  - CIDR parsing and expansion
-  - Parallel scanning workers with adaptive throttling
-  - Port probing, banner grab, and result export
-  - ASN-aware target handling
-  - Export and CSV assets under `builds/` for distribution
-- CLI/TUI: Interactive terminal UI using `internal/ui` with menu, scan controls, and logs.
-- Router/Proxy: Basic route/persistence plumbing and proxy server implementation.
+- Build artifacts are standalone binaries.
+- ASN datasets and assets/cf-domains.txt are embedded in the executable.
+- Config maker uses user-provided input or user-provided files and writes output to app data at runtime.
 
-## Not yet ported / future work
+## Requirements
 
-- MMDF/TLS MITM CA lifecycle (partial)
-- DPI desync engine (experimental features)
-- Some advanced Python-only tooling remains behind the bridge and can be ported on demand.
+- Go 1.20+
+- PowerShell (Windows) or bash (Linux/macOS)
 
-## Quickstart — development
+## Run Locally
 
-Prerequisites: Go (1.20+ recommended), PowerShell (Windows), or bash (Linux/macOS).
-
-Run the TUI:
+Run TUI mode:
 
 ```powershell
-cd go-port
 go run ./cmd/whitedns -mode ui -host 0.0.0.0 -port 7080
 ```
 
 Run proxy-only mode:
 
 ```powershell
-cd go-port
 go run ./cmd/whitedns -mode proxy -host 0.0.0.0 -port 7080
 ```
 
-Run the test/compile check:
+Run tests:
 
 ```powershell
-cd go-port
 go test ./...
 ```
 
-## Cross-platform builds
+## Build
 
-The repository includes `build_cross_platform.ps1` which produces binaries for multiple targets into the `builds/` folder.
-
-To reproduce locally (PowerShell):
+Build all targets:
 
 ```powershell
-cd go-port
-./build_cross_platform.ps1
+./build_cross_platform.ps1 -CleanBuild
 ```
 
-Generated artifacts (local run):
+Single target build example:
 
-- `builds/whitedns-windows-amd64.exe`
-- `builds/whitedns-linux-amd64`
-- `builds/whitedns-linux-arm64`
-- `builds/whitedns-macos-amd64`
-- `builds/whitedns-macos-arm64`
-- `builds/whitedns-termux-arm64`
+```powershell
+go build -o builds/whitedns-windows-amd64.exe ./cmd/whitedns
+```
 
-Each artifact is a standalone binary. ASN data and `cf-domains.txt` are embedded into the executable.
+Expected cross-platform outputs in builds:
 
-## Branch & recent changes
+- whitedns-windows-amd64.exe
+- whitedns-linux-amd64
+- whitedns-linux-arm64
+- whitedns-macos-amd64
+- whitedns-macos-arm64
+- whitedns-termux-arm64
 
-- Branch with UI fixes: `fix/ui-mojibake` — normalizes UI text and removes encoding artifacts in `internal/ui/menu.go` and `internal/ui/tui.go`.
-- Scanner port: merged locally; README updated to reflect scanner completion.
+## Project Layout
 
-If you prefer the README change on a different branch or want extra wording for the project website or release notes, tell me the target branch and wording.
+- cmd/whitedns: application entrypoint
+- internal/ui: terminal UI and workflow screens
+- internal/scanner: scanning engine and probe logic
+- internal/asn: ASN loading and lookup engine
+- internal/bundledata: embedded runtime datasets/assets
+- internal/proxy: proxy server components
+- internal/router: routing and persistence logic
 
 ## Contributing
 
-1. Fork or create a feature branch.
-2. Run tests: `go test ./...`.
-3. Build: `./build_cross_platform.ps1` (PowerShell) or `go build` for a single platform.
-4. Open a pull request with a clear description.
-
-## Contact / Next steps I can help with
-
-- Open the PR for `fix/ui-mojibake` (I can create the PR body).
-- Draft a release with the generated binaries.
-- Run a local UI smoke-check of the Windows build.
+1. Create a branch.
+2. Run tests with go test ./....
+3. Build with build_cross_platform.ps1 or go build.
+4. Open a pull request with a clear summary.
