@@ -3347,8 +3347,9 @@ func (m *tuiModel) startScanLogFile(scanKind string, targets []string, ports []i
 	if m != nil && m.app != nil && m.app.DataDir != "" {
 		dataDir = m.app.DataDir
 	}
+	logDir := whitednsLogsDir(dataDir)
+	_ = os.MkdirAll(logDir, 0o755)
 	stamp := time.Now().Format("20060102-150405")
-	logDir := filepath.Join(dataDir, "scan_logs")
 	path := filepath.Join(logDir, fmt.Sprintf("scan-%s-%s.txt", scanKind, stamp))
 	if absPath, err := filepath.Abs(path); err == nil {
 		path = absPath
@@ -3373,41 +3374,45 @@ func (m *tuiModel) startScanLogFile(scanKind string, targets []string, ports []i
 	m.writeScanLogLine(fmt.Sprintf("[PORTS] %v", ports))
 
 	// create incremental scan output file so partial results are saved in real-time
-	outDir := filepath.Join(dataDir, "scan_outputs")
-	if err := os.MkdirAll(outDir, 0o755); err == nil {
+	if err := os.MkdirAll(logDir, 0o755); err == nil {
 		stamp := time.Now().Format("20060102-150405")
-		outPath := filepath.Join(outDir, fmt.Sprintf("passed-%s-%s.txt", scanKind, stamp))
+		outPath := filepath.Join(logDir, fmt.Sprintf("passed-%s-%s.txt", scanKind, stamp))
 		if absOut, err := filepath.Abs(outPath); err == nil {
 			outPath = absOut
 		}
 		header := fmt.Sprintf("# Passed endpoints\n# kind: %s\n# partial: true\n\n", scanKind)
 		// create initial file (overwrite if somehow exists)
-		_ = storage.AtomicWriteText(outPath, header)
+		_ = os.WriteFile(outPath, []byte(header), 0o644)
 		m.scanOutputPath = outPath
 		m.scanDomainPassPath = ""
 
 		// if SNI scanner, also prepare failed and CSV incremental files
 		if scanKind == "sni_scanner" || scanKind == "desync_scanner" || m.operationType == "sni_scanner" || m.operationType == "desync_scanner" {
-			failedPath := filepath.Join(outDir, fmt.Sprintf("failed-%s-%s.txt", scanKind, stamp))
+			failedPath := filepath.Join(logDir, fmt.Sprintf("failed-%s-%s.txt", scanKind, stamp))
 			if absFailed, err := filepath.Abs(failedPath); err == nil {
 				failedPath = absFailed
 			}
-			_ = storage.AtomicWriteText(failedPath, fmt.Sprintf("# Failed endpoints\n# kind: %s\n# partial: true\n\n", scanKind))
+			_ = os.WriteFile(failedPath, []byte(fmt.Sprintf("# Failed endpoints\n# kind: %s\n# partial: true\n\n", scanKind)), 0o644)
 			m.scanFailedPath = failedPath
 
-			csvPath := filepath.Join(outDir, fmt.Sprintf("sni-%s-%s.csv", scanKind, stamp))
+			csvPath := filepath.Join(logDir, fmt.Sprintf("sni-%s-%s.csv", scanKind, stamp))
 			if absCSV, err := filepath.Abs(csvPath); err == nil {
 				csvPath = absCSV
 			}
-			_ = storage.AtomicWriteText(csvPath, "hostname,ipport,status,latency_ms,tls_version,http_status\n")
+			_ = os.WriteFile(csvPath, []byte("hostname,ipport,status,latency_ms,tls_version,http_status\n"), 0o644)
 			m.scanCSVPath = csvPath
 		} else if scanKind == "ipscan" {
-			domainPassPath := filepath.Join(outDir, fmt.Sprintf("domain-passes-%s-%s.txt", scanKind, stamp))
+			domainPassPath := filepath.Join(logDir, fmt.Sprintf("domain-passes-%s-%s.txt", scanKind, stamp))
 			if absDomainPass, err := filepath.Abs(domainPassPath); err == nil {
 				domainPassPath = absDomainPass
 			}
-			domainHeader := fmt.Sprintf("# Domain passes for passed endpoints\n# kind: %s\n# format: ip:port | domain1,domain2\n\n", scanKind)
-			_ = storage.AtomicWriteText(domainPassPath, domainHeader)
+			domainHeader := fmt.Sprintf("# Domain passes for passed endpoints\n# kind: %s\n# format: ip:port | passed/total | domain1,domain2\n\n", scanKind)
+			if err := os.WriteFile(domainPassPath, []byte(domainHeader), 0o644); err != nil {
+				m.writeScanLogLine(fmt.Sprintf("[OUTPUT] domain pass create failed: %v", err))
+				if fallbackErr := storage.AppendLine(domainPassPath, strings.TrimRight(domainHeader, "\n")); fallbackErr != nil {
+					m.writeScanLogLine(fmt.Sprintf("[OUTPUT] domain pass fallback failed: %v", fallbackErr))
+				}
+			}
 			m.scanDomainPassPath = domainPassPath
 			m.writeScanLogLine(fmt.Sprintf("[OUTPUT] domain pass output: %s", domainPassPath))
 		}
@@ -3443,7 +3448,7 @@ func (m *tuiModel) appendNewScanResultsToFile() {
 
 		outEp := ep
 		if m.operationType != "sni_scanner" && m.operationType != "desync_scanner" {
-			// strip tags and extract just IP:port
+			// strip tags and extract just IP:port for the passed IP file
 			if parts := strings.Fields(ep); len(parts) > 1 && strings.Contains(parts[1], ":") {
 				outEp = parts[1] // handles "http 1.2.3.4:80 lat=..."
 			} else if len(parts) > 0 && strings.Contains(parts[0], ":") {

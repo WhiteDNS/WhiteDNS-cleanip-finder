@@ -178,7 +178,7 @@ Failed: $FailCount
         }
         Write-Host "`nRuntime behavior:" -ForegroundColor Green
         Write-Host "  - ASN data and cf-domains are loaded from inside each binary" -ForegroundColor Green
-        Write-Host "  - Config-maker consumes user-provided inputs/files and writes output under app data" -ForegroundColor Green
+        Write-Host "  - Runtime outputs are written beside the executable under whitedns logs" -ForegroundColor Green
         exit 0
     }
     else {

@@ -386,7 +386,7 @@ func (m tuiModel) handleConfigMakerScreen(msg tea.Msg) (tuiModel, tea.Cmd) {
 			}
 			m.stepData["cm_target_text"] = data
 			m.tiStep = cmStepOutputPath
-			m.stepData["cm_output_default"] = filepath.Join(configMakerSupportDir(m), "rewritten_configs.txt")
+			m.stepData["cm_output_default"] = filepath.Join(configMakerOutputDir(m), "rewritten_configs.txt")
 			m.setupInput("Enter output path or leave empty for default")
 			return m, nil
 		}
@@ -480,7 +480,7 @@ func (m tuiModel) advanceConfigMakerAfterSource() (tuiModel, tea.Cmd) {
 		return m.applyConfigMakerReverse(source, false, "")
 	}
 	m.tiStep = cmStepOutputPath
-	m.stepData["cm_output_default"] = filepath.Join(configMakerSupportDir(m), "extracted_ips.txt")
+	m.stepData["cm_output_default"] = filepath.Join(configMakerOutputDir(m), "extracted_ips.txt")
 	m.setupInput("Enter output path or leave empty for default")
 	return m, nil
 }
@@ -498,7 +498,7 @@ func (m tuiModel) applyConfigMakerRewriteToPath(configText, targetText, outPath 
 	}
 
 	blocks := rewriteConfigMakerConfigs(configs, targets)
-	saved, err := configMakerSaveTextOutput(outPath, blocks, configMakerSupportDir(m))
+	saved, err := configMakerSaveTextOutput(outPath, blocks, configMakerOutputDir(m))
 	if err != nil {
 		m.setToast(sError.Render("x Failed to save rewritten configs"), 4*time.Second)
 		m.addLog(fmt.Sprintf("Config maker rewrite failed: %v", err))
@@ -525,7 +525,7 @@ func (m tuiModel) applyConfigMakerReverse(configText string, save bool, outPath 
 	}
 
 	if save {
-		saved, err := configMakerSaveTextOutput(outPath, ips, configMakerSupportDir(m))
+		saved, err := configMakerSaveTextOutput(outPath, ips, configMakerOutputDir(m))
 		if err != nil {
 			m.setToast(sError.Render("x Failed to save extracted IPs"), 4*time.Second)
 			m.addLog(fmt.Sprintf("Config maker reverse failed: %v", err))
@@ -581,6 +581,20 @@ func configMakerSupportDir(m tuiModel) string {
 	return "."
 }
 
+func whitednsLogsDir(dataDir string) string {
+	if strings.TrimSpace(dataDir) == "" {
+		dataDir = "."
+	}
+	return filepath.Join(dataDir, "whitedns logs")
+}
+
+func configMakerOutputDir(m tuiModel) string {
+	if m.app != nil && m.app.DataDir != "" {
+		return whitednsLogsDir(m.app.DataDir)
+	}
+	return whitednsLogsDir("")
+}
+
 func configMakerListTXTFiles(folder string) []string {
 	if strings.TrimSpace(folder) == "" {
 		return nil
@@ -634,14 +648,11 @@ func configMakerSaveTextOutput(outputPath string, lines []string, baseDir string
 		return "", fmt.Errorf("empty output path")
 	}
 	if !filepath.IsAbs(outputPath) {
-		// Treat filename-only output as local to config-maker support folder.
-		if filepath.Dir(outputPath) == "." && strings.TrimSpace(baseDir) != "" {
+		// Treat relative output as local to the provided base directory.
+		if strings.TrimSpace(baseDir) != "" {
 			outputPath = filepath.Join(baseDir, outputPath)
-		} else {
-			abs, err := filepath.Abs(outputPath)
-			if err == nil {
-				outputPath = abs
-			}
+		} else if abs, err := filepath.Abs(outputPath); err == nil {
+			outputPath = abs
 		}
 	}
 	if !strings.EqualFold(filepath.Ext(outputPath), ".txt") {

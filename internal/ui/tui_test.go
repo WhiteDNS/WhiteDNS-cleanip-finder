@@ -7,11 +7,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestAppendTransferLogLineFromScanLogCapturesBenchmarkLines(t *testing.T) {
 	tmpDir := t.TempDir()
-	logPath := filepath.Join(tmpDir, "scan_logs", "transfer-http-20260524-000000.txt")
+	logPath := filepath.Join(tmpDir, "whitedns logs", "transfer-http-20260524-000000.txt")
 
 	m := &tuiModel{
 		transferLogPath: logPath,
@@ -61,7 +62,7 @@ func TestParseDomainPassFromScannerLog(t *testing.T) {
 
 func TestAppendDomainPassLineFromScanLogWritesExpectedFormat(t *testing.T) {
 	tmpDir := t.TempDir()
-	domainPassPath := filepath.Join(tmpDir, "scan_outputs", "domain-passes-ipscan-test.txt")
+	domainPassPath := filepath.Join(tmpDir, "whitedns logs", "domain-passes-ipscan-test.txt")
 
 	m := &tuiModel{
 		scanDomainPassPath:    domainPassPath,
@@ -83,5 +84,55 @@ func TestAppendDomainPassLineFromScanLogWritesExpectedFormat(t *testing.T) {
 	want := "198.51.100.8:2053 | 2/9 | reddit.com,workers.dev"
 	if got != want {
 		t.Fatalf("unexpected domain pass output: got %q want %q", got, want)
+	}
+}
+
+func TestAppendNewScanResultsToFileWritesPlainIPPortForIPScan(t *testing.T) {
+	tmpDir := t.TempDir()
+	outputPath := filepath.Join(tmpDir, "whitedns logs", "passed-ipscan-test.txt")
+
+	m := &tuiModel{
+		operationType:     "ipscan",
+		scanOutputPath:    outputPath,
+		scanOutputMu:      &sync.Mutex{},
+		scanOutputWritten: make(map[string]bool),
+	}
+	m.scanResults = []string{"[ACCEPT] 198.51.100.8:2053 status=accept domains=9/9 domain_score=2 passed=[workers.dev,reddit.com]"}
+
+	m.appendNewScanResultsToFile()
+
+	content, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read passed output: %v", err)
+	}
+	got := strings.TrimSpace(string(content))
+	want := "198.51.100.8:2053"
+	if got != want {
+		t.Fatalf("unexpected passed output: got %q want %q", got, want)
+	}
+}
+
+func TestStartScanLogFileCreatesDomainPassOutputForIPScan(t *testing.T) {
+	tmpDir := t.TempDir()
+	m := &tuiModel{
+		app:           &App{DataDir: tmpDir},
+		scanLogMu:     &sync.Mutex{},
+		transferLogMu: &sync.Mutex{},
+		scanOutputMu:  &sync.Mutex{},
+	}
+
+	_ = m.startScanLogFile("ipscan", []string{"example.com"}, []int{443}, 1, time.Second)
+
+	if m.scanDomainPassPath == "" {
+		t.Fatalf("expected domain pass path to be set")
+	}
+	if _, err := os.Stat(m.scanDomainPassPath); err != nil {
+		t.Fatalf("expected domain pass file to exist: %v", err)
+	}
+	if m.scanOutputPath == "" {
+		t.Fatalf("expected passed output path to be set")
+	}
+	if _, err := os.Stat(m.scanOutputPath); err != nil {
+		t.Fatalf("expected passed output file to exist: %v", err)
 	}
 }

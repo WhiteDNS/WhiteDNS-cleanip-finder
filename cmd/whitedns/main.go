@@ -98,13 +98,16 @@ func resolveDataDir() string {
 	if override := strings.TrimSpace(os.Getenv("WHITE_PROXY_HOME")); override != "" {
 		return override
 	}
-	if cfgDir, err := os.UserConfigDir(); err == nil && strings.TrimSpace(cfgDir) != "" {
-		return filepath.Join(cfgDir, "whitedns")
+	if exePath, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exePath)
+		if strings.TrimSpace(exeDir) != "" {
+			return exeDir
+		}
 	}
-	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
-		return filepath.Join(home, ".whitedns")
+	if wd, err := os.Getwd(); err == nil && strings.TrimSpace(wd) != "" {
+		return wd
 	}
-	return ".whitedns"
+	return "."
 }
 
 func runProxy(cfg config.Config) {

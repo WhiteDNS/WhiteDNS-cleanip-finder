@@ -1434,7 +1434,7 @@ func saveScanOutputResults(dataDir, scanKind string, endpoints []string, operati
 	// write plain text file (passed endpoints)
 	body := fmt.Sprintf("# Passed endpoints\n# kind: %s\n# count: %d\n%s\n", scanKind, len(lines), strings.Join(lines, "\n"))
 	stamp := time.Now().Format("20060102-150405")
-	outDir := filepath.Join(dataDir, "scan_outputs")
+	outDir := whitednsLogsDir(dataDir)
 	_ = os.MkdirAll(outDir, 0o755)
 	txtPath := filepath.Join(outDir, fmt.Sprintf("passed-%s-%s.txt", scanKind, stamp))
 	if err := storage.AtomicWriteText(txtPath, body); err != nil {

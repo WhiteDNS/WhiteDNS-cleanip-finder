@@ -14,7 +14,7 @@ WhiteDNS Go Port is the Go implementation of WhiteDNS with native scanning, prox
 
 - Build artifacts are standalone binaries.
 - ASN datasets and assets/cf-domains.txt are embedded in the executable.
-- Config maker uses user-provided input or user-provided files and writes output to app data at runtime.
+- Runtime output files are written beside the executable in whitedns logs.
 
 ## Requirements
 
