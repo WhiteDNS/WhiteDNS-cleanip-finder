@@ -190,25 +190,61 @@ private fun ResultRow(line: String, onCopy: (String) -> Unit) {
             color = MintGreen,
         )
         if (domains.isNotEmpty()) {
-            // Each passed domain as a small tag (display only, not copyable).
-            domains.split(',').forEach { d ->
-                val name = d.trim()
-                if (name.isNotEmpty()) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.secondaryContainer,
-                        shape = MaterialTheme.shapes.small,
-                    ) {
-                        Text(
-                            name,
-                            fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                        )
-                    }
+            // Show the important domains first (shortened), cap the count, and
+            // collapse the rest into a "+N" tag so busy IPs stay readable.
+            val (tags, extra) = shortDomains(domains, max = 3)
+            tags.forEach { name ->
+                Surface(
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    shape = MaterialTheme.shapes.small,
+                ) {
+                    Text(
+                        name,
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                    )
                 }
+            }
+            if (extra > 0) {
+                Text(
+                    "+$extra",
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
+}
+
+// Friendly short labels for the common probe domains.
+private val DOMAIN_SHORT = mapOf(
+    "workers.dev" to "workers",
+    "pages.dev" to "pages",
+    "claude.ai" to "claude",
+    "gemini.google.com" to "gemini",
+    "notebooklm.google.com" to "notebook",
+    "chatgpt.com" to "chatgpt",
+    "instagram.com" to "instagram",
+    "web.telegram.org" to "telegram",
+    "reddit.com" to "reddit",
+)
+
+// Order important domains first; everything else keeps its position after.
+private val DOMAIN_PRIORITY = listOf(
+    "workers.dev", "pages.dev", "claude.ai", "gemini.google.com",
+    "notebooklm.google.com", "chatgpt.com",
+)
+
+// Returns (shortened tags to show, count of remaining hidden domains).
+private fun shortDomains(raw: String, max: Int): Pair<List<String>, Int> {
+    val items = raw.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+    val ordered = items.sortedBy { d ->
+        DOMAIN_PRIORITY.indexOf(d).let { if (it < 0) Int.MAX_VALUE else it }
+    }
+    val shown = ordered.take(max).map { DOMAIN_SHORT[it] ?: it.substringBefore('.') }
+    val extra = (ordered.size - shown.size).coerceAtLeast(0)
+    return shown to extra
 }
 
 private fun copyToClipboard(ctx: Context, text: String) {
