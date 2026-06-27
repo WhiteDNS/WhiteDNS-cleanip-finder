@@ -97,7 +97,7 @@ var CloudflareCNAMEDomains = []string{
 
 func Load() Config {
 	host := envOrDefault("WHITE_PROXY_HOST", "0.0.0.0")
-	port := intEnvOrDefault("WHITE_PROXY_PORT", 7080)
+	port := intEnvOrDefault("WHITE_PROXY_PORT", 8080)
 
 	return Config{
 		ProxyHost: host,

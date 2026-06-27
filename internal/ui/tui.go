@@ -93,6 +93,51 @@ func renderGradientText(text string, colors []string, bold bool) string {
 	return out.String()
 }
 
+func renderMenuTitle(width int, logs int) string {
+	if width < 20 {
+		width = 20
+	}
+	brandColors := []string{"#00d1ff", "#00d1ff", "#00c8f0", "#ff2d20", "#ff7a00", "#f5c400"}
+	devColors := []string{"#00d1ff", "#00c8f0", "#ff7a00", "#f5c400"}
+	meta := sDim.Render(fmt.Sprintf("logs:%d  %s", logs, time.Now().Format("15:04:05")))
+
+	if width < 72 {
+		line := renderGradientText("WHITEDNS v1.2", brandColors, true)
+		credit := renderGradientText("developed by TAjirax", devColors, false)
+		return lipgloss.PlaceHorizontal(width, lipgloss.Center, line) + "\n" +
+			lipgloss.PlaceHorizontal(width, lipgloss.Center, credit) + "\n" +
+			lipgloss.PlaceHorizontal(width, lipgloss.Center, meta)
+	}
+
+	banner := []string{
+		"__        ___   _ ___ _____ _____ ____  _   _ ____",
+		"\\ \\      / / | | |_ _|_   _| ____|  _ \\| \\ | / ___|",
+		" \\ \\ /\\ / /| |_| || |  | | |  _| | | | |  \\| \\___ \\",
+		"  \\ V  V / |  _  || |  | | | |___| |_| | |\\  |___) |",
+		"   \\_/\\_/  |_| |_|___| |_| |_____|____/|_| \\_|____/",
+	}
+
+	blockWidth := 0
+	for _, line := range banner {
+		if lineWidth := lipgloss.Width(line); lineWidth > blockWidth {
+			blockWidth = lineWidth
+		}
+	}
+	var out strings.Builder
+	for _, line := range banner {
+		if pad := blockWidth - lipgloss.Width(line); pad > 0 {
+			line += strings.Repeat(" ", pad)
+		}
+		out.WriteString(lipgloss.PlaceHorizontal(width, lipgloss.Center, renderGradientText(line, brandColors, true)))
+		out.WriteString("\n")
+	}
+	tagline := renderGradientText("v1.2  -  developed by TAjirax", devColors, true)
+	out.WriteString(lipgloss.PlaceHorizontal(width, lipgloss.Center, tagline))
+	out.WriteString("\n")
+	out.WriteString(lipgloss.PlaceHorizontal(width, lipgloss.Center, meta))
+	return out.String()
+}
+
 // ------------------------------------------------------------
 //  Message types
 // ------------------------------------------------------------
@@ -837,10 +882,12 @@ func (m tuiModel) viewMenu(w, h int) string {
 	half := (len(m.menu) + 1) / 2
 
 	// Title bar
-	titleBar := renderGradientText("WHITEDNS v1.1", []string{"#ff0000", "#ff0000"}, true) + "  " +
-		renderGradientText("developed by TAjirax", []string{"#00d1ff", "#8a2be2", "#ff0000"}, false) + "  " +
-		sDim.Render(fmt.Sprintf("port:%d  logs:%d  %s", m.app.Cfg.ProxyPort, len(m.logs), time.Now().Format("15:04:05")))
-	accentBar := lipgloss.NewStyle().Foreground(cAccent).Render(strings.Repeat("-", inner-1))
+	titleBar := renderMenuTitle(inner, len(m.logs))
+	accentWidth := w - 2
+	if accentWidth < inner {
+		accentWidth = inner
+	}
+	accentBar := lipgloss.NewStyle().Foreground(cAccent).Render(strings.Repeat("-", accentWidth))
 
 	// Two-column menu
 	colW := (inner - 4) / 2

@@ -11,7 +11,7 @@ from utils import data_store
 # ==========================================
 VERSION = "9.2.0"
 PROXY_HOST = '0.0.0.0'
-PROXY_PORT = 7080
+PROXY_PORT = 8080
 
 DEFAULT_TARGET_PORTS = [443,2053,2083,2087,2096,8443]
 TARGET_PORTS = list(DEFAULT_TARGET_PORTS)

@@ -26,13 +26,13 @@ WhiteDNS Go Port is the Go implementation of WhiteDNS with native scanning, prox
 Run TUI mode:
 
 ```powershell
-go run ./cmd/whitedns -mode ui -host 0.0.0.0 -port 7080
+go run ./cmd/whitedns -mode ui -host 0.0.0.0 -port 8080
 ```
 
 Run proxy-only mode:
 
 ```powershell
-go run ./cmd/whitedns -mode proxy -host 0.0.0.0 -port 7080
+go run ./cmd/whitedns -mode proxy -host 0.0.0.0 -port 8080
 ```
 
 Run tests:
