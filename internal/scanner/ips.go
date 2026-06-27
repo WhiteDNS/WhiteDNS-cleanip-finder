@@ -178,6 +178,7 @@ type IPScanOptions struct {
 	ProbeDomainsHTTPS         []string
 	EndpointCount             int
 	AdaptiveDomainConcurrency int // Set by pipeline based on scan conditions (default 4, up to 6)
+	LowBandwidth              bool
 	Method                    string
 }
 
@@ -477,6 +478,10 @@ func (s *Scanner) ScanIPsWithCIDR(cidrs []string, opts IPScanOptions) ([]string,
 			endpoints = append(endpoints, simpleEndpoint{ip: ip, port: port})
 		}
 	}
+	opts.EndpointCount = len(endpoints)
+	if opts.LowBandwidth && (opts.AdaptiveDomainConcurrency <= 0 || opts.AdaptiveDomainConcurrency > 1) {
+		opts.AdaptiveDomainConcurrency = 1
+	}
 	rand.Shuffle(len(endpoints), func(i, j int) { endpoints[i], endpoints[j] = endpoints[j], endpoints[i] })
 
 	// Run the 3-wave pipeline (TCP ping, proxy-aware head, full-body fingerprint)
@@ -581,12 +586,18 @@ func (s *Scanner) ScanIPsWithProgress(cidrs []string, opts IPScanOptions, progre
 	// Medium scans (10k-100k): use 13s (mixed response times)
 	// Large scans (>100k): use 15s (matching Python's generous max for slow CDNs)
 	endpointCount := len(endpoints)
+	opts.EndpointCount = endpointCount
 	optimalTimeout := calculateOptimalClientTimeout(endpointCount)
 	// For very large scans, increase worker concurrency to match Python's
 	// aggressive Wave-1 fanout (Python uses W1_CONCURRENCY=2000). A small
 	// `opts.Concurrency` (e.g. 250) will bottleneck throughput on large
 	// endpoint sets; raise it automatically unless user explicitly set it.
-	if endpointCount > 2500 && opts.Concurrency > 0 && opts.Concurrency < 2000 {
+	if opts.LowBandwidth {
+		if opts.AdaptiveDomainConcurrency <= 0 || opts.AdaptiveDomainConcurrency > 1 {
+			opts.AdaptiveDomainConcurrency = 1
+		}
+		s.logf("[DEBUG] Low-bandwidth IP scan: keeping concurrency=%d and domain concurrency=%d\n", opts.Concurrency, opts.AdaptiveDomainConcurrency)
+	} else if endpointCount > 2500 && opts.Concurrency > 0 && opts.Concurrency < 2000 {
 		s.logf("[DEBUG] Increasing opts.Concurrency %d -> 2000 for large scan (endpoints=%d)", opts.Concurrency, endpointCount)
 		opts.Concurrency = 2000
 	} else if endpointCount > 2500 && opts.Concurrency <= 0 {
@@ -749,15 +760,17 @@ func (s *Scanner) runThreeWavePipeline(ctx context.Context, endpoints []simpleEn
 					passedDomainsStr = ""
 				}
 				s.logf("[ACCEPT] %s:%d status=%s domains=%d/%d domain_score=%d passed=[%s]\n", ip, port, result.Status, result.DomainsTested, result.DomainTotal, result.DomainScore, passedDomainsStr)
-				if downloadKBps, uploadKBps, transferTags := s.benchmarkEndpointTransfer(fmt.Sprintf("%s:%d", ip, port), port == 443 || port == 2053 || port == 2083 || port == 2087 || port == 2096 || port == 8443, probeOpts.Timeout); downloadKBps > 0 || uploadKBps > 0 || len(transferTags) > 0 {
-					parts := []string{"http", fmt.Sprintf("%s:%d", ip, port), fmt.Sprintf("lat=%dms", probeLatency.Milliseconds())}
-					if summary := proxyTransferBenchmarkSummary(downloadKBps, uploadKBps); summary != "" {
-						parts = append(parts, summary)
+				if !probeOpts.LowBandwidth {
+					if downloadKBps, uploadKBps, transferTags := s.benchmarkEndpointTransfer(fmt.Sprintf("%s:%d", ip, port), port == 443 || port == 2053 || port == 2083 || port == 2087 || port == 2096 || port == 8443, probeOpts.Timeout); downloadKBps > 0 || uploadKBps > 0 || len(transferTags) > 0 {
+						parts := []string{"http", fmt.Sprintf("%s:%d", ip, port), fmt.Sprintf("lat=%dms", probeLatency.Milliseconds())}
+						if summary := proxyTransferBenchmarkSummary(downloadKBps, uploadKBps); summary != "" {
+							parts = append(parts, summary)
+						}
+						for _, tag := range transferTags {
+							parts = append(parts, fmt.Sprintf("[%s]", tag))
+						}
+						s.logf("[+] %s\n", strings.Join(parts, " "))
 					}
-					for _, tag := range transferTags {
-						parts = append(parts, fmt.Sprintf("[%s]", tag))
-					}
-					s.logf("[+] %s\n", strings.Join(parts, " "))
 				}
 				results <- fmt.Sprintf("%s:%d", ip, port)
 			} else if result != nil && result.Status == "dead" {
@@ -794,6 +807,9 @@ func (s *Scanner) runThreeWavePipeline(ctx context.Context, endpoints []simpleEn
 			if lastDomainConcCheck == 0 || now-lastDomainConcCheck >= 5000000000 { // every 5 seconds
 				timeoutRate := throttle.GetTimeoutRate()
 				newDomainConcurrency := calculateAdaptiveDomainConcurrency(len(endpoints), timeoutRate)
+				if probeOpts.LowBandwidth {
+					newDomainConcurrency = 1
+				}
 				if newDomainConcurrency != probeOpts.AdaptiveDomainConcurrency {
 					oldConcurrency := probeOpts.AdaptiveDomainConcurrency
 					probeOpts.AdaptiveDomainConcurrency = newDomainConcurrency

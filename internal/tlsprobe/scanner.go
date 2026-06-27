@@ -14,33 +14,43 @@ import (
 
 // ProbeOne performs a TCP+TLS handshake to the specified IP:port using the
 // provided ServerName (SNI). It returns a ProbeResult with TLS and HTTP info.
-//
-// When strict is true, only a handshake that presents the SNI counts as a
-// success: the "retry without SNI" fallback is disabled. This is what you want
-// for domain-fronting / SNI-spoofing discovery, where the point is that the IP
-// accepts the specific SNI. When strict is false, the legacy lenient behavior
-// is kept (a no-SNI handshake still counts), useful for general reachability.
 func ProbeOne(ip, hostname string, port int, timeout time.Duration, strict bool) ProbeResult {
+	return ProbeOneContext(context.Background(), ip, hostname, port, timeout, strict)
+}
+
+// ProbeOneContext is ProbeOne with cancellation support. The timeout is a total
+// per-pair budget shared by TCP retries, TLS, and the optional HTTP probe.
+func ProbeOneContext(ctx context.Context, ip, hostname string, port int, timeout time.Duration, strict bool) ProbeResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if timeout <= 0 {
+		timeout = 8 * time.Second
+	}
+
 	r := ProbeResult{IP: ip, Hostname: hostname, Port: port, ScannedAt: time.Now()}
 	start := time.Now()
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	deadline := start.Add(timeout)
 
-	conn := dialWithRetries(ip, port, timeout, 3)
-	if conn == nil {
-		r.Error = "tcp connect failed"
-		r.Success = false
+	conn, err := dialWithRetries(probeCtx, ip, port, deadline, 3)
+	if err != nil {
+		r.Error = err.Error()
+		r.ResultKind = "fail"
 		r.LatencyMs = float64(time.Since(start).Milliseconds())
 		return r
 	}
 	defer func() { _ = conn.Close() }()
 
-	remaining := timeout - time.Since(start)
+	remaining := time.Until(deadline)
 	if remaining <= 0 {
 		r.Error = "timeout before TLS"
+		r.ResultKind = "fail"
 		r.LatencyMs = float64(time.Since(start).Milliseconds())
 		return r
 	}
 
-	// Handshake presenting the requested SNI.
 	tlsConn := tls.Client(conn, &tls.Config{
 		ServerName:         hostname,
 		InsecureSkipVerify: true,
@@ -48,78 +58,125 @@ func ProbeOne(ip, hostname string, port int, timeout time.Duration, strict bool)
 	_ = tlsConn.SetDeadline(time.Now().Add(remaining))
 	sniErr := tlsConn.Handshake()
 	if sniErr == nil {
-		// SNI was accepted — the strong, trustworthy result.
 		r.SNIAccepted = true
 		r.Success = true
 		cs := tlsConn.ConnectionState()
 		recordCertInfo(&r, cs, hostname)
+		if r.CertMatchesSNI {
+			r.ResultKind = "cert-match"
+		} else {
+			r.ResultKind = "sni-ok"
+		}
 		r.LatencyMs = float64(time.Since(start).Milliseconds())
-		if rem := timeout - time.Since(start); rem > 0 {
+		if rem := time.Until(deadline); rem > 0 {
 			r.HTTPStatus, r.ServerHeader = probeHTTP(tlsConn, hostname, rem)
 		}
 		return r
 	}
 
-	// SNI handshake failed.
 	if strict {
-		// Do not fall back: in strict mode an SNI that the edge rejects is not a
-		// usable domain-fronting / spoofing candidate.
 		r.Success = false
 		r.SNIAccepted = false
 		r.Error = "sni rejected: " + sniErr.Error()
+		r.ResultKind = "fail"
 		r.LatencyMs = float64(time.Since(start).Milliseconds())
 		return r
 	}
 
-	// Lenient mode: retry once without an SNI in case the server rejects SNI.
-	remaining = timeout - time.Since(start)
+	remaining = time.Until(deadline)
 	if remaining <= 0 {
 		r.Error = "timeout before TLS retry"
+		r.ResultKind = "fail"
 		r.LatencyMs = float64(time.Since(start).Milliseconds())
 		return r
 	}
-	conn2 := dialWithRetries(ip, port, remaining, 1)
-	if conn2 == nil {
-		r.Error = sniErr.Error()
+	conn2, err := dialWithRetries(probeCtx, ip, port, deadline, 1)
+	if err != nil {
+		r.Error = sniErr.Error() + "; fallback: " + err.Error()
+		r.ResultKind = "fail"
 		r.LatencyMs = float64(time.Since(start).Milliseconds())
 		return r
 	}
 	defer func() { _ = conn2.Close() }()
+
 	tlsConn2 := tls.Client(conn2, &tls.Config{InsecureSkipVerify: true})
 	_ = tlsConn2.SetDeadline(time.Now().Add(remaining))
 	if err := tlsConn2.Handshake(); err != nil {
 		r.Error = err.Error()
+		r.ResultKind = "fail"
 		r.LatencyMs = float64(time.Since(start).Milliseconds())
 		return r
 	}
-	// Reached only without SNI: TLS works but the SNI itself was not accepted.
+
 	r.Success = true
 	r.SNIAccepted = false
+	r.ResultKind = "tls-only"
 	cs := tlsConn2.ConnectionState()
 	recordCertInfo(&r, cs, hostname)
 	r.LatencyMs = float64(time.Since(start).Milliseconds())
-	if rem := timeout - time.Since(start); rem > 0 {
+	if rem := time.Until(deadline); rem > 0 {
 		r.HTTPStatus, r.ServerHeader = probeHTTP(tlsConn2, hostname, rem)
 	}
 	return r
 }
 
-// dialWithRetries opens a TCP connection with bounded exponential backoff.
-func dialWithRetries(ip string, port int, timeout time.Duration, attempts int) net.Conn {
+func dialWithRetries(ctx context.Context, ip string, port int, deadline time.Time, attempts int) (net.Conn, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if attempts < 1 {
+		attempts = 1
+	}
+	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", ip, port))
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			if lastErr != nil {
+				return nil, fmt.Errorf("tcp connect timeout: %w", lastErr)
+			}
+			return nil, context.DeadlineExceeded
+		}
+
+		attemptBudget := remaining
+		attemptsLeft := attempts - attempt
+		if attemptsLeft > 1 {
+			if split := remaining / time.Duration(attemptsLeft); split > 0 && split < attemptBudget {
+				attemptBudget = split
+			}
+		}
+
+		attemptCtx, cancel := context.WithTimeout(ctx, attemptBudget)
+		conn, err := (&net.Dialer{}).DialContext(attemptCtx, "tcp", fmt.Sprintf("%s:%d", ip, port))
 		cancel()
 		if err == nil {
-			return conn
+			return conn, nil
 		}
-		time.Sleep(time.Duration(100*(1<<attempt)) * time.Millisecond)
+		lastErr = err
+
+		backoff := time.Duration(100*(1<<attempt)) * time.Millisecond
+		if rem := time.Until(deadline); backoff > rem {
+			backoff = rem
+		}
+		if backoff <= 0 {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
+		}
 	}
-	return nil
+	if lastErr != nil {
+		return nil, fmt.Errorf("tcp connect failed: %w", lastErr)
+	}
+	return nil, fmt.Errorf("tcp connect failed")
 }
 
 // recordCertInfo fills cert fields and whether the leaf certificate is valid for
-// the requested hostname (a strong domain-fronting / spoofing signal).
+// the requested hostname.
 func recordCertInfo(r *ProbeResult, cs tls.ConnectionState, hostname string) {
 	r.TLSVersion = tlsVersionString(cs.Version)
 	if len(cs.PeerCertificates) == 0 {
@@ -160,7 +217,6 @@ func probeHTTP(tlsConn *tls.Conn, hostname string, timeout time.Duration) (int, 
 	if tlsConn == nil {
 		return 0, ""
 	}
-	// write request
 	req := fmt.Sprintf("GET / HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", hostname)
 	_ = tlsConn.SetDeadline(time.Now().Add(timeout))
 	if _, err := tlsConn.Write([]byte(req)); err != nil {
@@ -168,7 +224,6 @@ func probeHTTP(tlsConn *tls.Conn, hostname string, timeout time.Duration) (int, 
 	}
 
 	r := bufio.NewReader(tlsConn)
-	// read status line(s) and find a line that starts with HTTP/
 	statusCode := 0
 	serverHeader := ""
 	for i := 0; i < 4; i++ {
@@ -182,7 +237,6 @@ func probeHTTP(tlsConn *tls.Conn, hostname string, timeout time.Duration) (int, 
 			if len(parts) >= 2 {
 				fmt.Sscanf(parts[1], "%d", &statusCode)
 			}
-			// now read headers
 			for {
 				hline, err := r.ReadString('\n')
 				if err != nil {
@@ -193,12 +247,8 @@ func probeHTTP(tlsConn *tls.Conn, hostname string, timeout time.Duration) (int, 
 					break
 				}
 				kv := strings.SplitN(hline, ":", 2)
-				if len(kv) == 2 {
-					key := strings.TrimSpace(kv[0])
-					val := strings.TrimSpace(kv[1])
-					if strings.EqualFold(key, "Server") {
-						serverHeader = val
-					}
+				if len(kv) == 2 && strings.EqualFold(strings.TrimSpace(kv[0]), "Server") {
+					serverHeader = strings.TrimSpace(kv[1])
 				}
 			}
 			break
@@ -207,13 +257,16 @@ func probeHTTP(tlsConn *tls.Conn, hostname string, timeout time.Duration) (int, 
 	return statusCode, serverHeader
 }
 
-// RunScan runs ProbeOne over all (ip x hostname) pairs using a worker pool.
-// It expands CIDR ranges (skips ranges > 65536). Sends ProbeResult to
-// resultCh and sends +1 to progressCh for each completed probe. Closes
-// resultCh and progressCh when done.
 func RunScan(cfg ScanConfig, resultCh chan<- ProbeResult, progressCh chan<- int) {
-	// Close channels on exit; callers must provide open channels. Use recover
-	// wrappers to avoid panics if a caller mistakenly closed a channel.
+	RunScanContext(context.Background(), cfg, resultCh, progressCh)
+}
+
+// RunScanContext runs ProbeOneContext over all (ip x port x hostname) tuples
+// using a streaming worker pool. It avoids materializing the full tuple list.
+func RunScanContext(ctx context.Context, cfg ScanConfig, resultCh chan<- ProbeResult, progressCh chan<- int) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	defer func() {
 		if resultCh != nil {
 			func() {
@@ -229,68 +282,126 @@ func RunScan(cfg ScanConfig, resultCh chan<- ProbeResult, progressCh chan<- int)
 		}
 	}()
 
-	// defaults
-	if cfg.Port == 0 {
-		cfg.Port = 443
-	}
+	ports := normalizePorts(cfg)
 	if cfg.TimeoutSec <= 0 {
-		// use a slightly higher default for SNI/TLS probing to avoid spurious timeouts
 		cfg.TimeoutSec = 8.0
 	}
 	if cfg.Concurrency <= 0 {
 		cfg.Concurrency = 50
 	}
+	if cfg.Concurrency > 10000 {
+		cfg.Concurrency = 10000
+	}
 
-	// expand targets into IP list.
-	// Callers must pass open channels; RunScan owns and closes resultCh/progressCh.
 	ips := expandTargets(cfg.Targets)
-	if len(ips) == 0 {
+	if len(ips) == 0 || len(cfg.Hostnames) == 0 || len(ports) == 0 {
 		return
 	}
 
-	// build pairs
-	var pairs []struct{ ip, host string }
-	for _, ip := range ips {
-		for _, h := range cfg.Hostnames {
-			pairs = append(pairs, struct{ ip, host string }{ip: ip, host: h})
-		}
-	}
-	if len(pairs) == 0 {
-		return
+	type job struct {
+		ip   string
+		host string
+		port int
 	}
 
-	// worker pool
-	sem := make(chan struct{}, cfg.Concurrency)
+	jobs := make(chan job, cfg.Concurrency*2)
 	var wg sync.WaitGroup
 	timeout := time.Duration(int64(cfg.TimeoutSec * float64(time.Second)))
 
-	for _, p := range pairs {
+	for i := 0; i < cfg.Concurrency; i++ {
 		wg.Add(1)
-		sem <- struct{}{}
-		go func(ip, host string) {
+		go func() {
 			defer wg.Done()
-			defer func() { <-sem }()
-			res := ProbeOne(ip, host, cfg.Port, timeout, cfg.StrictSNI)
-			if resultCh != nil {
-				resultCh <- res
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case j, ok := <-jobs:
+					if !ok {
+						return
+					}
+					if !waitWhilePaused(ctx, cfg.PauseFunc) {
+						return
+					}
+					res := ProbeOneContext(ctx, j.ip, j.host, j.port, timeout, cfg.StrictSNI)
+					if resultCh != nil {
+						select {
+						case resultCh <- res:
+						case <-ctx.Done():
+							return
+						}
+					}
+					if progressCh != nil {
+						select {
+						case progressCh <- 1:
+						case <-ctx.Done():
+							return
+						}
+					}
+				}
 			}
-			if progressCh != nil {
-				progressCh <- 1
-			}
-		}(p.ip, p.host)
+		}()
 	}
 
+producer:
+	for _, ip := range ips {
+		for _, port := range ports {
+			for _, host := range cfg.Hostnames {
+				select {
+				case <-ctx.Done():
+					break producer
+				case jobs <- job{ip: ip, host: host, port: port}:
+				}
+			}
+		}
+	}
+	close(jobs)
 	wg.Wait()
 }
 
+func waitWhilePaused(ctx context.Context, pauseFunc func() bool) bool {
+	if pauseFunc == nil {
+		return true
+	}
+	for pauseFunc() {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	return true
+}
+
+func normalizePorts(cfg ScanConfig) []int {
+	seen := make(map[int]struct{})
+	var out []int
+	for _, p := range cfg.Ports {
+		if p <= 0 || p > 65535 {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		p := cfg.Port
+		if p <= 0 {
+			p = 443
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
 // maxIPsPerCIDR caps how many addresses a single CIDR contributes. Large blocks
-// are capped (not skipped) so big ASN networks like /14 are still scanned — this
-// mirrors the IP scanner's expandCIDR behavior. Previously these were dropped
-// entirely, so ASN selections were silently ignored by the SNI scanner.
+// are capped so large ASN networks are still scanned.
 const maxIPsPerCIDR = 65536
 
 // ExpandTargets is the exported form of expandTargets so callers can compute an
-// accurate probe total (expanded IPs × hostnames) up front for progress display.
+// accurate probe total (expanded IPs x hostnames x ports) up front for progress.
 func ExpandTargets(raw []string) []string { return expandTargets(raw) }
 
 // expandTargets expands CIDR ranges and single IPs into a list of IP strings.
@@ -308,8 +419,6 @@ func expandTargets(raw []string) []string {
 			if err != nil {
 				continue
 			}
-			// Count addresses in the network, guarding against int overflow for
-			// very large prefixes (e.g. IPv6 or small IPv4 prefixes).
 			ones, bits := ipnet.Mask.Size()
 			shift := bits - ones
 			count := maxIPsPerCIDR + 1
@@ -327,7 +436,6 @@ func expandTargets(raw []string) []string {
 				}
 				continue
 			}
-			// For very small networks (/31 and /32) include all addresses.
 			if count <= 2 {
 				for cur := new(big.Int).Set(startIP); cur.Cmp(endIP) <= 0; cur.Add(cur, big.NewInt(1)) {
 					ipStr := bigIntToIP(cur, ip.To4() == nil)
@@ -341,8 +449,6 @@ func expandTargets(raw []string) []string {
 				}
 				continue
 			}
-			// Iterate usable hosts (exclude network and broadcast), capping large
-			// blocks at maxIPsPerCIDR so they are partially scanned, not skipped.
 			firstHost := new(big.Int).Add(startIP, big.NewInt(1))
 			lastHost := new(big.Int).Sub(endIP, big.NewInt(1))
 			added := 0
@@ -358,7 +464,6 @@ func expandTargets(raw []string) []string {
 				}
 			}
 		} else {
-			// single IP
 			if net.ParseIP(s) == nil {
 				continue
 			}
@@ -384,7 +489,6 @@ func bigIntToIP(i *big.Int, wantIPv6 bool) string {
 		return ""
 	}
 	b := i.Bytes()
-	// pad to 16 bytes
 	if len(b) < 16 {
 		pad := make([]byte, 16-len(b))
 		b = append(pad, b...)

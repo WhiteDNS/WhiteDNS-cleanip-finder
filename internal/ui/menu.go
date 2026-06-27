@@ -1444,40 +1444,42 @@ func saveScanOutputResults(dataDir, scanKind string, endpoints []string, operati
 	// If SNI scanner, also write a CSV containing status per-host
 	if operationType == "sni_scanner" || operationType == "desync_scanner" {
 		csvLines := make([]string, 0, len(endpoints)+1)
-		csvLines = append(csvLines, "hostname,ip,port,status,latency_ms,tls_version,http_status,sni_accepted,cert_matches_sni")
+		csvLines = append(csvLines, "hostname,ipport,status,result_kind,latency_ms,tls_version,http_status,sni_accepted,cert_matches_sni")
 		for _, ep := range endpoints {
-			// expected format: "hostname ip:port STATUS latency TLSVersion HTTPStatus [marker]"
-			// SNI usability is encoded as a trailing [cert-match]/[sni-ok] marker.
-			sniAccepted := strings.Contains(ep, "[cert-match]") || strings.Contains(ep, "[sni-ok]")
-			certMatch := strings.Contains(ep, "[cert-match]")
 			parts := strings.Fields(ep)
 			if len(parts) < 3 {
 				// unknown format
-				csvLines = append(csvLines, fmt.Sprintf(",%s,,,,,%t,%t", ep, sniAccepted, certMatch))
+				csvLines = append(csvLines, fmt.Sprintf(",%s,,,,,,%t,%t", ep, false, false))
 				continue
 			}
 			hostname := parts[0]
 			ipport := parts[1]
 			status := parts[2]
+			kind := ""
 			latency := ""
 			tlsv := ""
 			httpst := ""
 			if len(parts) >= 4 {
-				latency = parts[3]
+				kind = parts[3]
 			}
 			if len(parts) >= 5 {
-				tlsv = parts[4]
+				latency = parts[4]
 			}
 			if len(parts) >= 6 {
-				httpst = parts[5]
+				tlsv = parts[5]
+			}
+			if len(parts) >= 7 {
+				httpst = parts[6]
 			}
 			// normalize status to OK/FAIL/UNKNOWN
 			stat := strings.ToUpper(status)
 			if stat != "OK" && stat != "FAIL" {
 				stat = "UNKNOWN"
 			}
+			sniAccepted := kind == "cert-match" || kind == "sni-ok"
+			certMatch := kind == "cert-match"
 			// build CSV line
-			csvLines = append(csvLines, fmt.Sprintf("%s,%s,%s,%s,%s,%s,%t,%t", hostname, ipport, status, latency, tlsv, httpst, sniAccepted, certMatch))
+			csvLines = append(csvLines, fmt.Sprintf("%s,%s,%s,%s,%s,%s,%s,%t,%t", hostname, ipport, stat, kind, latency, tlsv, httpst, sniAccepted, certMatch))
 		}
 		csvPath := filepath.Join(outDir, fmt.Sprintf("sni-%s-%s.csv", scanKind, stamp))
 		if err := storage.AtomicWriteText(csvPath, strings.Join(csvLines, "\n")); err != nil {

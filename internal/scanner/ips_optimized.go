@@ -41,7 +41,11 @@ func (s *Scanner) runThreeWavePipelineOptimized(ctx context.Context, endpoints [
 	if len(probeOpts.ProbeDomainsHTTPS) == 0 {
 		probeOpts.ProbeDomainsHTTPS = append([]string(nil), defaultProbeDomains...)
 	}
-	probeOpts.AdaptiveDomainConcurrency = calculateAdaptiveDomainConcurrency(total, 0.0)
+	if probeOpts.LowBandwidth {
+		probeOpts.AdaptiveDomainConcurrency = 1
+	} else if probeOpts.AdaptiveDomainConcurrency <= 0 {
+		probeOpts.AdaptiveDomainConcurrency = calculateAdaptiveDomainConcurrency(total, 0.0)
+	}
 
 	// Set concurrency: respect requested concurrency but avoid
 	// spawning more workers than there are jobs or an absolute safety cap.
@@ -131,15 +135,17 @@ func (s *Scanner) runThreeWavePipelineOptimized(ctx context.Context, endpoints [
 							passedDomainsStr = ""
 						}
 						s.logf("[ACCEPT] %s:%d status=%s domains=%d/%d domain_score=%d passed=[%s]\n", job.ip, job.port, result.Status, result.DomainsTested, result.DomainTotal, result.DomainScore, passedDomainsStr)
-						if downloadKBps, uploadKBps, transferTags := s.benchmarkEndpointTransfer(fmt.Sprintf("%s:%d", job.ip, job.port), job.port == 443 || job.port == 2053 || job.port == 2083 || job.port == 2087 || job.port == 2096 || job.port == 8443, probeOpts.Timeout); downloadKBps > 0 || uploadKBps > 0 || len(transferTags) > 0 {
-							parts := []string{"http", fmt.Sprintf("%s:%d", job.ip, job.port), fmt.Sprintf("lat=%dms", probeLatency.Milliseconds())}
-							if summary := proxyTransferBenchmarkSummary(downloadKBps, uploadKBps); summary != "" {
-								parts = append(parts, summary)
+						if !probeOpts.LowBandwidth {
+							if downloadKBps, uploadKBps, transferTags := s.benchmarkEndpointTransfer(fmt.Sprintf("%s:%d", job.ip, job.port), job.port == 443 || job.port == 2053 || job.port == 2083 || job.port == 2087 || job.port == 2096 || job.port == 8443, probeOpts.Timeout); downloadKBps > 0 || uploadKBps > 0 || len(transferTags) > 0 {
+								parts := []string{"http", fmt.Sprintf("%s:%d", job.ip, job.port), fmt.Sprintf("lat=%dms", probeLatency.Milliseconds())}
+								if summary := proxyTransferBenchmarkSummary(downloadKBps, uploadKBps); summary != "" {
+									parts = append(parts, summary)
+								}
+								for _, tag := range transferTags {
+									parts = append(parts, fmt.Sprintf("[%s]", tag))
+								}
+								s.logf("[+] %s\n", strings.Join(parts, " "))
 							}
-							for _, tag := range transferTags {
-								parts = append(parts, fmt.Sprintf("[%s]", tag))
-							}
-							s.logf("[+] %s\n", strings.Join(parts, " "))
 						}
 						resultsChan <- fmt.Sprintf("%s:%d", job.ip, job.port)
 					} else if result != nil && result.Status == "dead" {

@@ -3,6 +3,7 @@ package ui
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/csv"
 	"fmt"
 	"io"
@@ -325,6 +326,8 @@ type tuiModel struct {
 	scanLogPath     string
 	scanLogMu       *sync.Mutex
 	scanPaused      bool
+	scanCtx         context.Context
+	scanCancel      context.CancelFunc
 	transferLogPath string
 	transferLogMu   *sync.Mutex
 	// incremental scan output file (written as results are discovered)
@@ -2113,7 +2116,12 @@ func (m tuiModel) handleSelectASNScreen(msg tea.Msg) (tuiModel, tea.Cmd) {
 				m.scanConfig.ASNs = append(m.scanConfig.ASNs, m.asnFiltered[idx].Networks...)
 			}
 		}
-		m.addLog(fmt.Sprintf("Selected %d ASN networks", len(m.scanConfig.ASNs)))
+		if m.operationType == "sni_scanner" || m.operationType == "desync_scanner" {
+			expandedIPs := len(tlsprobe.ExpandTargets(m.scanConfig.ASNs))
+			m.addLog(fmt.Sprintf("Selected %d ASN networks (%d expanded IPs for SNI scan)", len(m.scanConfig.ASNs), expandedIPs))
+		} else {
+			m.addLog(fmt.Sprintf("Selected %d ASN networks", len(m.scanConfig.ASNs)))
+		}
 
 		if m.operationType == "export_asn" {
 			path, count, err := exportASNTargetsToTXT(m.app.DataDir, m.scanConfig.ASNs, "")
@@ -2422,8 +2430,10 @@ func (m tuiModel) handleSelectConcurrencyScreen(msg tea.Msg) (tuiModel, tea.Cmd)
 		m.scanConfig.LowBandwidth = m.cursor == 0
 		m.scanConfig.Concurrency = sel
 		if m.scanConfig.LowBandwidth {
+			m.scanConfig.AdaptiveDomainConcurrency = 1
 			m.addLog(fmt.Sprintf("Low-bandwidth mode: concurrency=%d with extended verification timeouts", sel))
 		} else {
+			m.scanConfig.AdaptiveDomainConcurrency = 0
 			m.addLog(fmt.Sprintf("Concurrency set to %d", m.scanConfig.Concurrency))
 		}
 		m.startOperation()
@@ -2482,9 +2492,16 @@ func (m tuiModel) handleScanningScreen(msg tea.Msg) (tuiModel, tea.Cmd) {
 	if k, ok := msg.(tea.KeyMsg); ok {
 		switch k.String() {
 		case "c":
-			// Cancel - nothing to do without a context; just go back
+			if m.scanCancel != nil {
+				m.scanCancel()
+				m.addLog("Scan cancelled")
+			}
 			m.goBack()
 		case "q":
+			if m.scanCancel != nil {
+				m.scanCancel()
+				m.addLog("Scan cancelled")
+			}
 			m.goBack()
 		case "p":
 			// toggle pause
@@ -2703,6 +2720,8 @@ func (m tuiModel) handleScanComplete(msg scanCompleteMsg) (tuiModel, tea.Cmd) {
 	}
 	m.scanProgress = m.scanTotal
 	m.scanMsgCh = nil
+	m.scanCtx = nil
+	m.scanCancel = nil
 	if msg.err != nil {
 		m.writeScanLogLine(fmt.Sprintf("[COMPLETE] scan failed: %v", msg.err))
 	} else {
@@ -2713,8 +2732,11 @@ func (m tuiModel) handleScanComplete(msg scanCompleteMsg) (tuiModel, tea.Cmd) {
 			m.addLog(fmt.Sprintf("Saved scan output to %s", path))
 		}
 	}
-	// append any newly discovered results to incremental output file
-	m.appendNewScanResultsToFile()
+	// SNI/desync write incremental passed/failed/CSV files from the live result
+	// loop because they need per-probe detail. Other operations append here.
+	if m.operationType != "sni_scanner" && m.operationType != "desync_scanner" {
+		m.appendNewScanResultsToFile()
+	}
 	if msg.err != nil {
 		m.addLog(fmt.Sprintf("Scan failed: %v", msg.err))
 		m.setToast(sError.Render("x "+msg.err.Error()), 5*time.Second)
@@ -2759,6 +2781,8 @@ func (m tuiModel) handlePoolOperationComplete(msg poolOperationCompleteMsg) (tui
 	m.scanProgress = m.scanTotal
 	m.scanHits = len(m.scanResults)
 	m.scanMsgCh = nil
+	m.scanCtx = nil
+	m.scanCancel = nil
 	if msg.err != nil {
 		m.writeScanLogLine(fmt.Sprintf("[COMPLETE] %s failed: %v", msg.operationType, msg.err))
 	} else {
@@ -2936,10 +2960,15 @@ func (m tuiModel) cmdPoolOperation(opType string, asnNetworks []string) tea.Cmd 
 				}
 				timeout := scanTimeoutBudget(endpointCount, cfg.LowBandwidth)
 				opts := scanner.IPScanOptions{
-					Ports:         ports,
-					Concurrency:   conc,
-					Timeout:       timeout,
-					EndpointCount: endpointCount,
+					Ports:                     ports,
+					Concurrency:               conc,
+					Timeout:                   timeout,
+					EndpointCount:             endpointCount,
+					LowBandwidth:              cfg.LowBandwidth,
+					AdaptiveDomainConcurrency: cfg.AdaptiveDomainConcurrency,
+				}
+				if cfg.LowBandwidth {
+					opts.AdaptiveDomainConcurrency = 1
 				}
 				if opType == "sni_scanner" || opType == "desync_scanner" {
 					// SNI scanner uses tlsprobe hostnames for the TLS hostname probe path.
@@ -2999,29 +3028,49 @@ func (m tuiModel) cmdPoolOperation(opType string, asnNetworks []string) tea.Cmd 
 						close(ch)
 						return poolOperationCompleteMsg{operationType: opType, results: []string{"SNI scan aborted: " + reason}, duration: time.Since(t0)}
 					}
+					expandedIPs := len(tlsprobe.ExpandTargets(targets))
+					if expandedIPs == 0 {
+						expandedIPs = len(targets)
+					}
+					totalProbes := expandedIPs * len(ports) * len(opts.ProbeDomainsHTTPS)
+					startScan := time.Now()
+					select {
+					case ch <- logMsg{text: fmt.Sprintf("[SNI] Expanded %d target range(s) to %d IP(s); ports=%d domains=%d total probes=%d", len(targets), expandedIPs, len(ports), len(opts.ProbeDomainsHTTPS), totalProbes)}:
+					default:
+					}
+					select {
+					case ch <- scanProgressMsg{current: 0, total: totalProbes, hits: 0, startTime: startScan, totalIPs: expandedIPs}:
+					default:
+					}
+					runCtx := m.scanCtx
+					if runCtx == nil {
+						runCtx = context.Background()
+					}
 					go func() {
 						probeCfg := tlsprobe.ScanConfig{
 							Targets:     append([]string(nil), targets...),
 							Hostnames:   append([]string(nil), opts.ProbeDomainsHTTPS...),
-							Port:        ports[0],
+							Ports:       append([]int(nil), ports...),
 							TimeoutSec:  float64(timeout.Seconds()),
 							Concurrency: opts.Concurrency,
 							StrictSNI:   cfg.SNIStrict,
+							PauseFunc: func() bool {
+								return scannerInst != nil && scannerInst.IsPaused()
+							},
 						}
-						tlsprobe.RunScan(probeCfg, resCh, nil)
+						tlsprobe.RunScanContext(runCtx, probeCfg, resCh, nil)
 					}()
 
 					var sniResults []string
 					processed := 0
 					hits := 0
+					certMatchCount := 0
+					sniOKCount := 0
+					tlsOnlyCount := 0
+					failCount := 0
+					timeoutCount := 0
 					// Use the expanded IP count (not the CIDR count) so progress
 					// reflects the actual number of probes.
-					expandedIPs := len(tlsprobe.ExpandTargets(targets))
-					if expandedIPs == 0 {
-						expandedIPs = len(targets)
-					}
-					totalProbes := expandedIPs * len(opts.ProbeDomainsHTTPS)
-					startScan := time.Now()
 					for pr := range resCh {
 						processed++
 						statusLabel := "FAIL"
@@ -3029,15 +3078,24 @@ func (m tuiModel) cmdPoolOperation(opType string, asnNetworks []string) tea.Cmd 
 							statusLabel = "OK"
 							hits++
 						}
-						text := fmt.Sprintf("%s %s:%d %s %dms %s %d", pr.Hostname, pr.IP, pr.Port, statusLabel, int(pr.LatencyMs), pr.TLSVersion, pr.HTTPStatus)
-						// Tag SNI-spoof / domain-front usability: cert-match is the
-						// strongest signal, then SNI-accepted. Appended after the
-						// positional fields so existing parsers are unaffected.
-						if pr.CertMatchesSNI {
-							text += " [cert-match]"
-						} else if pr.SNIAccepted {
-							text += " [sni-ok]"
+						kind := pr.ResultKind
+						if kind == "" {
+							kind = classifySNIResultKind(pr)
 						}
+						switch kind {
+						case "cert-match":
+							certMatchCount++
+						case "sni-ok":
+							sniOKCount++
+						case "tls-only":
+							tlsOnlyCount++
+						default:
+							failCount++
+						}
+						if isSNITimeout(pr) {
+							timeoutCount++
+						}
+						text := fmt.Sprintf("%s %s:%d %s %s %dms %s %d", pr.Hostname, pr.IP, pr.Port, statusLabel, kind, int(pr.LatencyMs), pr.TLSVersion, pr.HTTPStatus)
 						// forward as logMsg for live UI
 						select {
 						case ch <- logMsg{text: text}:
@@ -3046,7 +3104,7 @@ func (m tuiModel) cmdPoolOperation(opType string, asnNetworks []string) tea.Cmd 
 
 						// Write incremental CSV and failed/passed files so results are available in real-time
 						if m.scanCSVPath != "" {
-							csvLine := fmt.Sprintf("%s,%s:%d,%s,%d,%s,%d,%t,%t", pr.Hostname, pr.IP, pr.Port, statusLabel, int(pr.LatencyMs), pr.TLSVersion, pr.HTTPStatus, pr.SNIAccepted, pr.CertMatchesSNI)
+							csvLine := fmt.Sprintf("%s,%s:%d,%s,%s,%d,%s,%d,%t,%t,%q,%q", pr.Hostname, pr.IP, pr.Port, statusLabel, kind, int(pr.LatencyMs), pr.TLSVersion, pr.HTTPStatus, pr.SNIAccepted, pr.CertMatchesSNI, pr.ServerHeader, pr.Error)
 							_ = storage.AppendLine(m.scanCSVPath, csvLine)
 						}
 
@@ -3061,7 +3119,7 @@ func (m tuiModel) cmdPoolOperation(opType string, asnNetworks []string) tea.Cmd 
 							}
 						}
 						// forward progress update
-						msg := scanProgressMsg{current: processed, total: totalProbes, hits: hits, startTime: startScan, currentIP: text, totalIPs: len(targets)}
+						msg := scanProgressMsg{current: processed, total: totalProbes, hits: hits, startTime: startScan, currentIP: text, totalIPs: expandedIPs}
 						select {
 						case ch <- msg:
 						default:
@@ -3071,7 +3129,17 @@ func (m tuiModel) cmdPoolOperation(opType string, asnNetworks []string) tea.Cmd 
 							sniResults = append(sniResults, text)
 						}
 					}
+					summaryLine := fmt.Sprintf("[SNI-SUMMARY] ips=%d ports=%d domains=%d probes=%d processed=%d ok=%d cert-match=%d sni-ok=%d tls-only=%d fail=%d timeouts=%d",
+						expandedIPs, len(ports), len(opts.ProbeDomainsHTTPS), totalProbes, processed, hits, certMatchCount, sniOKCount, tlsOnlyCount, failCount, timeoutCount)
+					select {
+					case ch <- logMsg{text: summaryLine}:
+					default:
+					}
+					m.writeScanLogLine(summaryLine)
 					close(ch)
+					if err := runCtx.Err(); err != nil {
+						return poolOperationCompleteMsg{operationType: opType, results: sniResults, err: err, duration: time.Since(t0)}
+					}
 					if len(sniResults) == 0 {
 						sniResults = []string{"No responding IPs found"}
 					}
@@ -3322,6 +3390,10 @@ func (m *tuiModel) resetASNScreen(placeholder string) {
 
 func (m *tuiModel) startOperation() {
 	m.pushScreen(screenScanning)
+	if m.scanCancel != nil {
+		m.scanCancel()
+	}
+	m.scanCtx, m.scanCancel = context.WithCancel(context.Background())
 	m.scanStartTime = time.Now()
 	m.scanProgress = 0
 	m.scanHits = 0
@@ -3419,7 +3491,7 @@ func (m *tuiModel) startScanLogFile(scanKind string, targets []string, ports []i
 			if absCSV, err := filepath.Abs(csvPath); err == nil {
 				csvPath = absCSV
 			}
-			_ = os.WriteFile(csvPath, []byte("hostname,ipport,status,latency_ms,tls_version,http_status,sni_accepted,cert_matches_sni\n"), 0o644)
+			_ = os.WriteFile(csvPath, []byte("hostname,ipport,status,result_kind,latency_ms,tls_version,http_status,sni_accepted,cert_matches_sni,server_header,error\n"), 0o644)
 			m.scanCSVPath = csvPath
 		} else if scanKind == "ipscan" {
 			domainPassPath := filepath.Join(logDir, fmt.Sprintf("domain-passes-%s-%s.txt", scanKind, stamp))
@@ -3489,6 +3561,7 @@ func (m *tuiModel) appendNewScanResultsToFile() {
 			hostname := ""
 			ipport := ""
 			status := "UNKNOWN"
+			kind := ""
 			latency := ""
 			tlsv := ""
 			httpst := ""
@@ -3502,13 +3575,16 @@ func (m *tuiModel) appendNewScanResultsToFile() {
 				status = parts[2]
 			}
 			if len(parts) >= 4 {
-				latency = parts[3]
+				kind = parts[3]
 			}
 			if len(parts) >= 5 {
-				tlsv = parts[4]
+				latency = parts[4]
 			}
 			if len(parts) >= 6 {
-				httpst = parts[5]
+				tlsv = parts[5]
+			}
+			if len(parts) >= 7 {
+				httpst = parts[6]
 			}
 
 			// write passed to incremental passed file
@@ -3533,7 +3609,7 @@ func (m *tuiModel) appendNewScanResultsToFile() {
 
 			// append CSV line if csv path available
 			if m.scanCSVPath != "" {
-				csvLine := fmt.Sprintf("%s,%s,%s,%s,%s,%s", hostname, ipport, status, latency, tlsv, httpst)
+				csvLine := fmt.Sprintf("%s,%s,%s,%s,%s,%s,%s,,,,", hostname, ipport, status, kind, latency, tlsv, httpst)
 				if err := storage.AppendLine(m.scanCSVPath, csvLine); err != nil {
 					m.writeScanLogLine(fmt.Sprintf("[OUTPUT] append csv failed: %v", err))
 				}
@@ -3781,6 +3857,26 @@ func parseProxyEndpointFromResult(line string) string {
 		return parts[0]
 	}
 	return ""
+}
+
+func classifySNIResultKind(pr tlsprobe.ProbeResult) string {
+	if pr.CertMatchesSNI {
+		return "cert-match"
+	}
+	if pr.SNIAccepted {
+		return "sni-ok"
+	}
+	if pr.Success {
+		return "tls-only"
+	}
+	return "fail"
+}
+
+func isSNITimeout(pr tlsprobe.ProbeResult) bool {
+	errText := strings.ToLower(pr.Error)
+	return strings.Contains(errText, "timeout") ||
+		strings.Contains(errText, "deadline") ||
+		strings.Contains(errText, "i/o timeout")
 }
 
 func scanTimeoutBudget(endpointCount int, lowBandwidth bool) time.Duration {
