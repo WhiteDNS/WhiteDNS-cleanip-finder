@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Self-contained launch theme for a pure-Compose app. Parents off the
+      platform Material theme (always available, API 21+) so we don't need the
+      com.google.android.material XML library. All real theming is done in
+      Compose via WhiteDNSTheme; this only sets the window/system-bar colours
+      to match the dark cyan scheme so there's no white flash on launch.
+    -->
+    <style name="Theme.WhiteScan" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/whiteScanBackground</item>
+        <item name="android:statusBarColor">@color/whiteScanBackground</item>
+        <item name="android:navigationBarColor">@color/whiteScanBackground</item>
+    </style>
+</resources>

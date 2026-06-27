@@ -12,7 +12,7 @@
         android:label="WhiteDNS v1.2"
         android:usesCleartextTraffic="true"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Material3.DynamicColors.DayNight">
+        android:theme="@style/Theme.WhiteScan">
 
         <activity
             android:name=".MainActivity"

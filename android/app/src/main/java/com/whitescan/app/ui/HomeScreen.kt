@@ -110,9 +110,6 @@ private fun ScanCard(
     OutlinedCard(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
-        border = CardDefaults.outlinedCardBorder().copy(
-            // tint border with accent colour
-        ),
     ) {
         Row(
             modifier = Modifier

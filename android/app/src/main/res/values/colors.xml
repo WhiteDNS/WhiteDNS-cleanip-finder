@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Matches DarkBase in Theme.kt (#12121A) -->
+    <color name="whiteScanBackground">#FF12121A</color>
+</resources>
