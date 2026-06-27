@@ -111,7 +111,9 @@ func saveResults(path string, lines []string) (string, error) {
 	return path, nil
 }
 
-// emit forwards results+done to the listener unless the handle was stopped.
+// finish saves results to disk, delivers them as a single batch call, then
+// signals completion. Batch delivery avoids allocating a new list per result
+// on the Android side (critical on low-memory devices).
 func finish(h *ScanHandle, l ScanListener, dataDir, kind string, results []string, scanErr error) {
 	if l == nil {
 		return
@@ -124,14 +126,12 @@ func finish(h *ScanHandle, l ScanListener, dataDir, kind string, results []strin
 		l.OnDone("", "stopped")
 		return
 	}
-	for _, r := range results {
-		l.OnResult(r)
-	}
 	saved := ""
 	if len(results) > 0 {
 		if p, err := saveResults(resultsFilePath(dataDir, kind), results); err == nil {
 			saved = p
 		}
+		l.OnResultBatch(strings.Join(results, "\n"))
 	}
 	l.OnDone(saved, "")
 }
@@ -358,7 +358,6 @@ func StartSNIScan(dataDir string, cfg *ScanConfig, l ScanListener) *ScanHandle {
 			l.OnLog(text)
 			if pr.Success {
 				results = append(results, text)
-				l.OnResult(text)
 			}
 			eta := 0
 			if processed > 0 && processed < total {
@@ -381,6 +380,7 @@ func StartSNIScan(dataDir string, cfg *ScanConfig, l ScanListener) *ScanHandle {
 			if p, err := saveResults(resultsFilePath(dataDir, "sni"), results); err == nil {
 				saved = p
 			}
+			l.OnResultBatch(strings.Join(results, "\n"))
 		}
 		l.OnDone(saved, "")
 	}()

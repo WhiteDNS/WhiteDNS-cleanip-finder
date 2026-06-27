@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Covers filesDir/results/ where scan output is written -->
+    <files-path name="scan_results" path="results/" />
+    <files-path name="asn_exports" path="asn_exports/" />
+</paths>

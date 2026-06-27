@@ -1,0 +1,98 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:   # also triggerable manually from GitHub Actions tab
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed to create GitHub Releases
+
+    steps:
+      # ── 1. Checkout ─────────────────────────────────────────────────────────
+      - uses: actions/checkout@v4
+
+      # ── 2. Go 1.26 ──────────────────────────────────────────────────────────
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+          cache-dependency-path: go-port/go.sum
+
+      # ── 3. JDK 17 (required by Gradle / Android build tools) ───────────────
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # ── 4. Android SDK + NDK ────────────────────────────────────────────────
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK r26
+        run: |
+          sdkmanager --install "ndk;26.3.11579264" "platforms;android-34" "build-tools;34.0.0"
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/26.3.11579264
+
+      # ── 5. gomobile ─────────────────────────────────────────────────────────
+      - name: Install gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+
+      - name: gomobile init
+        working-directory: go-port
+        run: gomobile init
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/26.3.11579264
+
+      # ── 6. Build whitescan.aar ───────────────────────────────────────────────
+      - name: Build .aar (Go → Android library)
+        working-directory: go-port
+        run: |
+          mkdir -p android/app/libs
+          gomobile bind \
+            -target=android/arm64,android/arm,android/amd64 \
+            -androidapi 21 \
+            -javapkg com.whitescan.engine \
+            -o android/app/libs/whitescan.aar \
+            ./mobile
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/26.3.11579264
+
+      # ── 7. Build APK via Gradle ─────────────────────────────────────────────
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+
+      - name: Build debug APK
+        working-directory: go-port/android
+        run: gradle assembleDebug
+
+      # ── 8. Upload APK as workflow artifact (available for 30 days) ──────────
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WhiteDNS-${{ github.sha }}.apk
+          path: go-port/android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+
+      # ── 9. Also create/update a GitHub Release on every main push ───────────
+      - name: Get short SHA
+        id: sha
+        run: echo "short=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-${{ steps.sha.outputs.short }}
+          name: "WhiteDNS ${{ steps.sha.outputs.short }}"
+          body: "Automated APK build from commit ${{ github.sha }}"
+          files: go-port/android/app/build/outputs/apk/debug/app-debug.apk
+          fail_on_unmatched_files: false

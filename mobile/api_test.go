@@ -1,6 +1,7 @@
 package mobile
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -27,6 +28,15 @@ func (c *captureListener) OnProgress(processed, total, found, uniqueIPs int, cur
 func (c *captureListener) OnResult(line string) {
 	c.mu.Lock()
 	c.results = append(c.results, line)
+	c.mu.Unlock()
+}
+func (c *captureListener) OnResultBatch(lines string) {
+	c.mu.Lock()
+	for _, l := range strings.Split(lines, "\n") {
+		if l != "" {
+			c.results = append(c.results, l)
+		}
+	}
 	c.mu.Unlock()
 }
 func (c *captureListener) OnLog(line string) {

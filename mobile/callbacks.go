@@ -9,8 +9,12 @@ package mobile
 type ScanListener interface {
 	// OnProgress reports cumulative progress. etaSec is best-effort (0 if unknown).
 	OnProgress(processed, total, found, uniqueIPs int, currentIP string, etaSec int)
-	// OnResult delivers one accepted endpoint, formatted like the desktop TUI.
+	// OnResult delivers one accepted endpoint in real-time (streaming, for live display).
+	// Only called for scan types that stream results (SNI, proxy waves).
 	OnResult(line string)
+	// OnResultBatch delivers the full result set at completion as a single
+	// newline-joined string. Use this to avoid thousands of individual calls on mobile.
+	OnResultBatch(lines string)
 	// OnLog delivers a scanner diagnostic / activity line.
 	OnLog(line string)
 	// OnDone signals completion. savedPath is the results file ("" if none);
