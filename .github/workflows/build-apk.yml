@@ -68,7 +68,7 @@ jobs:
         run: |
           mkdir -p android/app/libs
           gomobile bind \
-            -target=android/arm64,android/arm,android/amd64 \
+            -target=android/arm,android/arm64,android/386,android/amd64 \
             -androidapi 21 \
             -javapkg com.whitescan.engine \
             -o android/app/libs/whitescan.aar \
@@ -80,16 +80,43 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Build debug APK
+      - name: Prepare Tajirax release signing key
+        env:
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.TAJIRAX_KEYSTORE_BASE64 }}
+          SIGNING_KEYSTORE_PASSWORD: ${{ secrets.TAJIRAX_KEYSTORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.TAJIRAX_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.TAJIRAX_KEY_PASSWORD }}
+        run: |
+          if [ -z "$SIGNING_KEYSTORE_BASE64" ] || [ -z "$SIGNING_KEYSTORE_PASSWORD" ]; then
+            echo "Missing TAJIRAX_KEYSTORE_BASE64 or TAJIRAX_KEYSTORE_PASSWORD secrets."
+            exit 1
+          fi
+          echo "$SIGNING_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/tajirax-release.jks"
+          echo "SIGNING_KEYSTORE_PATH=$RUNNER_TEMP/tajirax-release.jks" >> "$GITHUB_ENV"
+          echo "SIGNING_KEYSTORE_PASSWORD=$SIGNING_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "SIGNING_KEY_ALIAS=${SIGNING_KEY_ALIAS:-tajirax}" >> "$GITHUB_ENV"
+          echo "SIGNING_KEY_PASSWORD=${SIGNING_KEY_PASSWORD:-$SIGNING_KEYSTORE_PASSWORD}" >> "$GITHUB_ENV"
+
+      - name: Build signed release APKs
         working-directory: android
-        run: gradle assembleDebug
+        run: gradle assembleRelease bundleRelease
+
+      - name: Collect release artifacts
+        run: |
+          mkdir -p android/release-artifacts
+          for apk in android/app/build/outputs/apk/release/*.apk; do
+            name="$(basename "$apk")"
+            cp "$apk" "android/release-artifacts/WhiteDNS-IP-Scanner-${name#app-}"
+          done
+          cp android/app/build/outputs/bundle/release/app-release.aab \
+            android/release-artifacts/WhiteDNS-IP-Scanner-release.aab
 
       # ── 10. Upload APK artifact (30-day download in Actions tab) ─────────────
-      - name: Upload APK artifact
+      - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: WhiteDNS-${{ github.sha }}.apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: WhiteDNS-IP-Scanner-${{ github.sha }}-signed-release
+          path: android/release-artifacts/*
           retention-days: 30
 
       # ── 11. GitHub Release (only on v* tags) ─────────────────────────────────
@@ -107,5 +134,5 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: "WhiteDNS ${{ github.ref_name }}"
           body: "APK build for ${{ github.ref_name }} (${{ github.sha }})"
-          files: android/app/build/outputs/apk/debug/app-debug.apk
+          files: android/release-artifacts/*
           fail_on_unmatched_files: false

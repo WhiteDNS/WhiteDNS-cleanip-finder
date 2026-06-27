@@ -64,7 +64,7 @@ All commands run from the **repo root** (`go-port/`).
 .\build-aar.ps1
 ```
 This sets `GOTOOLCHAIN=local`, registers the gomobile tool dependency, then runs
-`gomobile bind` for **arm64-v8a, armeabi-v7a, x86_64**. Output:
+`gomobile bind` for **armeabi-v7a, arm64-v8a, x86, x86_64**. Output:
 `android/app/libs/whitescan.aar` (~20–30 MB).
 
 Re-run this whenever you change Go code under `mobile/` or `internal/`.
@@ -144,7 +144,15 @@ even on million-IP scans.
 ## B. Build via GitHub Actions (no local setup)
 
 The workflow at `.github/workflows/build-apk.yml` does the whole pipeline on a
-clean Ubuntu runner.
+clean Ubuntu runner. It builds signed release artifacts for `armeabi-v7a`,
+`arm64-v8a`, `x86`, `x86_64`, a universal APK, and a release AAB for Play Store.
+
+Add these repository secrets before running the release workflow:
+
+- `TAJIRAX_KEYSTORE_BASE64`: base64-encoded `.jks` release keystore.
+- `TAJIRAX_KEYSTORE_PASSWORD`: keystore password.
+- `TAJIRAX_KEY_ALIAS`: key alias; defaults to `tajirax` if omitted.
+- `TAJIRAX_KEY_PASSWORD`: key password; defaults to the keystore password if omitted.
 
 - **Manual:** GitHub → **Actions** → **Build Android APK** → **Run workflow**.
 - **On a release tag:**
@@ -153,6 +161,6 @@ clean Ubuntu runner.
   git push origin v1.0.0
   ```
 
-When it finishes, the APK is on the run's page under **Artifacts**
-(`WhiteDNS-<sha>.apk`). Tag builds also publish a GitHub **Release** with the
-APK attached.
+When it finishes, the signed release files are on the run's page under
+**Artifacts** (`WhiteDNS-IP-Scanner-<sha>-signed-release`). Tag builds also
+publish a GitHub **Release** with the APKs and AAB attached.

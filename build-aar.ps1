@@ -36,10 +36,10 @@ if ($LASTEXITCODE -ne 0) { Write-Error "go get -tool failed ($LASTEXITCODE)" }
 
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
-Write-Host "Building whitescan.aar (arm64-v8a, armeabi-v7a, x86_64)..." -ForegroundColor Cyan
+Write-Host "Building whitescan.aar (armeabi-v7a, arm64-v8a, x86, x86_64)..." -ForegroundColor Cyan
 $gomobileArgs = @(
     "bind",
-    "-target=android/arm64,android/arm,android/amd64",
+    "-target=android/arm,android/arm64,android/386,android/amd64",
     "-androidapi", "21",
     "-javapkg", "com.whitescan.engine",
     "-o", $outAar,

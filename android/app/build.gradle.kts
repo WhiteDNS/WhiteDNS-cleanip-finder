@@ -3,6 +3,9 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val appVersionCode = 2
+val appVersionName = "1.2"
+
 android {
     namespace = "com.whitescan.app"
     compileSdk = 34
@@ -11,13 +14,37 @@ android {
         applicationId = "com.whitescan.app"
         minSdk = 21
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.2"
+        versionCode = appVersionCode
+        versionName = appVersionName
+    }
+
+    signingConfigs {
+        create("tajiraxRelease") {
+            storeFile = file(System.getenv("SIGNING_KEYSTORE_PATH") ?: "tajirax-release.jks")
+            storePassword = System.getenv("SIGNING_KEYSTORE_PASSWORD") ?: ""
+            keyAlias = System.getenv("SIGNING_KEY_ALIAS") ?: "tajirax"
+            keyPassword = System.getenv("SIGNING_KEY_PASSWORD")
+                ?: System.getenv("SIGNING_KEYSTORE_PASSWORD")
+                ?: ""
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
+            enableV4Signing = true
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("tajiraxRelease")
+        }
+    }
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+            isUniversalApk = true
         }
     }
     compileOptions {

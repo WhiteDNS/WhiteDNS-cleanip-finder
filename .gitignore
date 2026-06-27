@@ -44,6 +44,8 @@ New Text Document.txt
 *.local
 *.secret
 *.secrets
+*.jks
+*.keystore
 internal/ui/sni_crash_test.go
 
 # Embedded bundle data — required at compile time by go:embed in
