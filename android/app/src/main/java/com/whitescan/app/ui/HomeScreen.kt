@@ -1,20 +1,25 @@
 package com.whitescan.app.ui
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.whitescan.app.R
 import com.whitescan.app.ScanKind
 
 @Composable
@@ -23,43 +28,25 @@ fun HomeScreen(onSelect: (ScanKind) -> Unit, onConfigMaker: () -> Unit) {
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
+            .verticalScroll(rememberScrollState())
             .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically),
+        verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.Top),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // ── Branding — mimics the TUI ASCII banner gradient ──────────────────
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(
-                    Brush.horizontalGradient(
-                        listOf(Color(0xFF00D1FF), Color(0xFF00C8F0), Color(0xFFFF7A00), Color(0xFFF5C400))
-                    ),
-                    shape = MaterialTheme.shapes.medium,
-                )
-                .padding(vertical = 14.dp, horizontal = 20.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    "WHITEDNS",
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Black,
-                    fontSize = 26.sp,
-                    color = Color(0xFF001820),
-                    letterSpacing = 4.sp,
-                )
-                Text(
-                    "v1.2  ·  developed by TAjirax",
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 11.sp,
-                    color = Color(0xFF003040),
-                    letterSpacing = 1.sp,
-                )
-            }
-        }
+        Image(
+            painter = painterResource(R.drawable.whitedns_logo),
+            contentDescription = "WhiteDNS IP Scanner",
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.size(156.dp),
+        )
 
-        Spacer(Modifier.height(4.dp))
+        Text(
+            "v1.2  ·  developed by TAjirax",
+            fontFamily = FontFamily.Monospace,
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            letterSpacing = 1.sp,
+        )
 
         ScanCard(
             icon = Icons.Default.Search,
@@ -125,7 +112,6 @@ private fun ScanCard(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            // Coloured icon
             Box(
                 modifier = Modifier
                     .size(44.dp)
