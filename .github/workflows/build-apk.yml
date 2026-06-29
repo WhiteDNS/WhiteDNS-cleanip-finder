@@ -162,6 +162,10 @@ jobs:
       # Only publish a Release on real tag pushes. On a manual workflow_dispatch,
       # github.ref_name is the branch ("main") â€” creating a tag from it collides
       # with the branch and breaks `git push`. Guard against that.
+      # Attach ONLY the APKs to the public Release. The .aab (Play Store upload
+      # format, not directly installable by users) stays in the private 30-day
+      # workflow artifact above for the maintainer to download and upload to the
+      # Play Console.
       - name: Upload to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -169,6 +173,6 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: "WhiteDNS ${{ github.ref_name }}"
           body: "APK build for ${{ github.ref_name }} (${{ github.sha }})"
-          files: android/release-artifacts/*
+          files: android/release-artifacts/*.apk
           fail_on_unmatched_files: false
 
