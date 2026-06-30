@@ -13,7 +13,7 @@
   ·
   <a href="README.fa.md"><strong>فارسی</strong></a>
   ·
-  <a href="https://github.com/TaJirax/WhiteDNS-cleanip-finder/releases"><strong>Downloads</strong></a>
+  <a href="https://github.com/WhiteDNS/WhiteDNS-cleanip-finder/releases"><strong>Downloads</strong></a>
 </p>
 
 ---
@@ -28,7 +28,7 @@
 Download the latest files from the **GitHub Releases** page:
 
 ```text
-https://github.com/TaJirax/WhiteDNS-cleanip-finder/releases
+https://github.com/WhiteDNS/WhiteDNS-cleanip-finder/releases
 ```
 
 ---

@@ -15,7 +15,7 @@
   ·
   <a href="README.fa.md"><strong>فارسی</strong></a>
   ·
-  <a href="https://github.com/TaJirax/WhiteDNS-cleanip-finder/releases"><strong>دانلودها</strong></a>
+  <a href="https://github.com/WhiteDNS/WhiteDNS-cleanip-finder/releases"><strong>دانلودها</strong></a>
 </p>
 
 ---
@@ -30,7 +30,7 @@
 دانلود آخرین فایل‌ها از صفحه **GitHub Releases**:
 
 ```text
-https://github.com/TaJirax/WhiteDNS-cleanip-finder/releases
+https://github.com/WhiteDNS/WhiteDNS-cleanip-finder/releases
 ```
 
 ---
