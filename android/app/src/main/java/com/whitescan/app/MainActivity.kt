@@ -243,13 +243,21 @@ class MainActivity : ComponentActivity() {
                             Screen.AsnPicker -> AsnSearchScreen(
                                 dataDir = currentScanDir().absolutePath,
                                 confirmLabel = if (pendingKind == ScanKind.ASN_EXPORT) "Export IPs" else "Use selection",
+                                constrainedDevice = shouldUseConstrainedScanDefaults(),
                                 onSelected = { targets ->
-                                    form = form.copy(targets = targets)
+                                    val constrainedDevice = shouldUseConstrainedScanDefaults()
+                                    val targetRef = try {
+                                        targetsForDevice(currentScanDir(), targets, constrainedDevice)
+                                    } catch (e: Throwable) {
+                                        Log.w("MainActivity", "Could not persist ASN targets; falling back to inline targets", e)
+                                        targets
+                                    }
+                                    form = form.copy(targets = targetRef)
                                     if (pendingKind == ScanKind.ASN_EXPORT) {
                                         vm.reset()
                                         startForegroundScanService(ScanKind.ASN_EXPORT)
                                         vm.start(ScanKind.ASN_EXPORT, currentScanDir().absolutePath,
-                                            form.copy(targets = targets).toEngineConfig(shouldUseConstrainedScanDefaults()))
+                                            form.copy(targets = targetRef).toEngineConfig(constrainedDevice))
                                         screen = Screen.Scanning(ScanKind.ASN_EXPORT)
                                     } else {
                                         screen = Screen.Config(pendingKind)
@@ -315,6 +323,18 @@ class MainActivity : ComponentActivity() {
         } catch (e: Throwable) {
             Log.w("MainActivity", "Foreground service stop failed", e)
         }
+    }
+
+    private fun targetsForDevice(dataDir: File, targets: String, constrainedDevice: Boolean): String {
+        if (!constrainedDevice) return targets
+        val trimmed = targets.trim()
+        if (trimmed.isBlank()) return trimmed
+
+        val tmpDir = dataDir.resolve("tmp")
+        tmpDir.mkdirs()
+        val out = tmpDir.resolve("asn-targets-${System.currentTimeMillis()}.txt")
+        out.writeText(trimmed + "\n")
+        return "@${out.absolutePath}"
     }
 }
 

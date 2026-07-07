@@ -178,16 +178,52 @@ func (lf *logFile) close() {
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 func splitTargets(blob string) []string {
-	fields := strings.FieldsFunc(blob, func(r rune) bool {
-		return r == '\n' || r == '\r' || r == ' ' || r == '\t' || r == ','
-	})
-	out := make([]string, 0, len(fields))
-	for _, f := range fields {
-		if f = strings.TrimSpace(f); f != "" {
-			out = append(out, f)
-		}
+	var out []string
+	for _, line := range strings.FieldsFunc(blob, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	}) {
+		appendTargetLine(&out, line, 0)
 	}
 	return out
+}
+
+func appendTargetLine(out *[]string, line string, depth int) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return
+	}
+	if strings.HasPrefix(line, "@") {
+		appendTargetsFromFile(out, strings.TrimSpace(strings.TrimPrefix(line, "@")), depth+1)
+		return
+	}
+	for _, f := range strings.FieldsFunc(line, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == ','
+	}) {
+		if f = strings.TrimSpace(f); f != "" {
+			*out = append(*out, f)
+		}
+	}
+}
+
+func appendTargetsFromFile(out *[]string, path string, depth int) {
+	if depth > 3 {
+		return
+	}
+	path = strings.Trim(path, `"'`)
+	if path == "" {
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	fileScanner := bufio.NewScanner(f)
+	fileScanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for fileScanner.Scan() {
+		appendTargetLine(out, fileScanner.Text(), depth)
+	}
 }
 
 func parsePortsCSV(portStr string) []int {
@@ -628,6 +664,59 @@ func expandTargetsToFile(targets []string, path string, dedupCap int) (int, erro
 	return count, f.Close()
 }
 
+func expandTargetsLimited(targets []string, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	out := make([]string, 0, limit)
+	seen := make(map[string]struct{}, limit)
+	emit := func(ip string) bool {
+		if ip == "" {
+			return len(out) >= limit
+		}
+		if _, ok := seen[ip]; ok {
+			return len(out) >= limit
+		}
+		seen[ip] = struct{}{}
+		out = append(out, ip)
+		return len(out) >= limit
+	}
+
+	for _, t := range targets {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		if host, _, err := net.SplitHostPort(t); err == nil && net.ParseIP(host) != nil {
+			if emit(host) {
+				break
+			}
+			continue
+		}
+		if net.ParseIP(t) != nil {
+			if emit(t) {
+				break
+			}
+			continue
+		}
+		_, ipnet, err := net.ParseCIDR(t)
+		if err != nil {
+			continue
+		}
+		cur := make(net.IP, len(ipnet.IP))
+		copy(cur, ipnet.IP.Mask(ipnet.Mask))
+		emitted := 0
+		for ipnet.Contains(cur) && emitted < perCIDRMaxIPs {
+			if emit(cur.String()) {
+				return out
+			}
+			emitted++
+			incIP(cur)
+		}
+	}
+	return out
+}
+
 // incIP increments an IP address (big-endian) by one, in place.
 func incIP(ip net.IP) {
 	for j := len(ip) - 1; j >= 0; j-- {
@@ -758,6 +847,10 @@ func StartSNIScan(dataDir string, cfg *ScanConfig, l ScanListener) *ScanHandle {
 			l.OnDone("", reason)
 			return
 		}
+		if liteMode {
+			runLiteSNIScan(dataDir, cfg, l, h, targets, domains, ports, conc, timeout)
+			return
+		}
 
 		rf, _ := openResultFile(dataDir, "sni")
 		logThrottle := newThrottle(250 * time.Millisecond)
@@ -827,6 +920,135 @@ func StartSNIScan(dataDir string, cfg *ScanConfig, l ScanListener) *ScanHandle {
 
 // ── Speed & Loss rank ────────────────────────────────────────────────────────
 
+func runLiteSNIScan(dataDir string, cfg *ScanConfig, l ScanListener, h *ScanHandle, targets, domains []string, ports []int, conc int, timeout time.Duration) {
+	chunkSize := liteChunkIPCount
+	if len(domains) > 0 {
+		chunkSize = liteChunkEndpointCount / len(domains)
+		if chunkSize < 1 {
+			chunkSize = 1
+		}
+		if chunkSize > liteChunkIPCount {
+			chunkSize = liteChunkIPCount
+		}
+	}
+
+	tmpPath := filepath.Join(dataDir, "tmp", fmt.Sprintf("sni-targets-%d.txt", time.Now().UnixNano()))
+	totalIPs, err := expandTargetsToFile(targets, tmpPath, liteDedupCap)
+	if err != nil {
+		l.OnDone("", "could not stage SNI targets: "+err.Error())
+		return
+	}
+	defer os.Remove(tmpPath)
+	if totalIPs == 0 {
+		l.OnDone("", "no IP targets selected")
+		return
+	}
+
+	file, err := os.Open(tmpPath)
+	if err != nil {
+		l.OnDone("", err.Error())
+		return
+	}
+	defer file.Close()
+
+	rf, _ := openResultFile(dataDir, "sni")
+	logThrottle := newThrottle(250 * time.Millisecond)
+	resultThrottle := newThrottle(250 * time.Millisecond)
+	total := totalIPs * len(domains)
+	start := time.Now()
+	processed, hits := 0, 0
+
+	l.OnLog(fmt.Sprintf("[SNI-LITE-START] targets=%d staged_ips=%d domains=%d total_probes=%d concurrency=%d",
+		len(targets), totalIPs, len(domains), total, conc))
+
+	runChunk := func(chunk []string) {
+		if len(chunk) == 0 || h.isStopped() {
+			return
+		}
+		resCh := make(chan tlsprobe.ProbeResult, 128)
+		go func() {
+			tlsprobe.RunScanContext(h.ctx, tlsprobe.ScanConfig{
+				Targets:     chunk,
+				Hostnames:   domains,
+				Port:        ports[0],
+				TimeoutSec:  timeout.Seconds(),
+				Concurrency: conc,
+				StrictSNI:   cfg.SNIStrict,
+				PauseFunc:   h.isPaused,
+			}, resCh, nil)
+		}()
+
+		for pr := range resCh {
+			processed++
+			if h.isStopped() {
+				continue
+			}
+
+			label := "FAIL"
+			if pr.Success {
+				label = "OK"
+				hits++
+			}
+			suffix := ""
+			if pr.CertMatchesSNI {
+				suffix = " [cert-match]"
+			} else if pr.SNIAccepted {
+				suffix = " [sni-ok]"
+			}
+			text := fmt.Sprintf("%s %s:%d %s %dms %s %d%s",
+				pr.Hostname, pr.IP, pr.Port, label,
+				int(pr.LatencyMs), pr.TLSVersion, pr.HTTPStatus, suffix)
+
+			if pr.Success {
+				rf.write(text)
+				if resultThrottle.allow() {
+					l.OnResult(text)
+				}
+			}
+			if logThrottle.allow() {
+				l.OnLog(text)
+			}
+			l.OnProgress(processed, total, hits, totalIPs, pr.IP,
+				calcETA(start, processed, total))
+		}
+		rf.flush()
+	}
+
+	fileScanner := bufio.NewScanner(file)
+	fileScanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	chunk := make([]string, 0, chunkSize)
+	for fileScanner.Scan() {
+		if h.isStopped() {
+			break
+		}
+		for h.isPaused() && !h.isStopped() {
+			time.Sleep(200 * time.Millisecond)
+		}
+		line := strings.TrimSpace(fileScanner.Text())
+		if line == "" {
+			continue
+		}
+		chunk = append(chunk, line)
+		if len(chunk) >= chunkSize {
+			runChunk(chunk)
+			chunk = chunk[:0]
+			runtime.GC()
+			time.Sleep(300 * time.Millisecond)
+		}
+	}
+	if !h.isStopped() {
+		runChunk(chunk)
+	}
+
+	reason := "completed"
+	if h.isStopped() {
+		reason = "stopped"
+	}
+	l.OnLog(fmt.Sprintf("[SNI-LITE-END] reason=%s staged_ips=%d processed=%d/%d hits=%d elapsed=%s",
+		reason, totalIPs, processed, total, hits, time.Since(start).Round(time.Second)))
+	l.OnDone(rf.close(), "")
+}
+
 // maxSpeedRankIPs caps how many IPs are benchmarked on a phone. The speed test
 // downloads/uploads several MB per IP, so this is intentionally small — the
 // feature is meant to rank an already-passed clean-IP shortlist, not a CIDR.
@@ -858,7 +1080,12 @@ func StartSpeedRankScan(dataDir string, cfg *ScanConfig, l ScanListener) *ScanHa
 	timeout := timeoutOrDefault(cfg.TimeoutMs, 12*time.Second, lowBandwidth)
 
 	go func() {
-		ips := tlsprobe.ExpandTargets(targets)
+		var ips []string
+		if liteMode {
+			ips = expandTargetsLimited(targets, maxSpeedRankIPs)
+		} else {
+			ips = tlsprobe.ExpandTargets(targets)
+		}
 		if len(ips) == 0 {
 			ips = targets
 		}
@@ -945,48 +1172,22 @@ func ExportASN(dataDir, query string) (string, error) {
 	return path, err
 }
 
-// normASN normalizes an ASN identifier for exact comparison ("AS44244" == "44244").
-func normASN(s string) string {
-	s = strings.ToUpper(strings.TrimSpace(s))
-	s = strings.TrimPrefix(s, "AS")
-	return s
-}
-
 // ExpandASNs takes newline/space/comma-separated ASN identifiers (e.g. the ones
 // the ASN picker returns) and expands each to its IPv4 CIDRs, returning them as
 // a newline-separated string suitable for use as scan Targets. IPv6 ranges are
 // skipped because the IP/SNI/proxy scanners operate on IPv4.
 func ExpandASNs(dataDir, asnIDs string) (string, error) {
 	eng := asn.NewASNEngine(dataDir)
-	if err := eng.Load(); err != nil {
+	if err := eng.LoadIPv4(); err != nil {
 		return "", err
 	}
 	ids := splitTargets(asnIDs)
 	if len(ids) == 0 {
 		return "", fmt.Errorf("no ASNs given")
 	}
-	seen := make(map[string]bool)
-	var cidrs []string
-	for _, id := range ids {
-		groups, err := eng.SearchGroups(id)
-		if err != nil {
-			continue
-		}
-		want := normASN(id)
-		for _, g := range groups {
-			if normASN(g.ASN) != want {
-				continue // substring match for a different ASN — skip
-			}
-			for _, c := range g.CIDRs {
-				if strings.Contains(c, ":") {
-					continue // IPv6 — not scannable here
-				}
-				if !seen[c] {
-					seen[c] = true
-					cidrs = append(cidrs, c)
-				}
-			}
-		}
+	cidrs, err := eng.IPv4CIDRsForASNs(ids)
+	if err != nil {
+		return "", err
 	}
 	if len(cidrs) == 0 {
 		return "", fmt.Errorf("no IPv4 CIDRs found for the selected ASN(s)")
@@ -1010,26 +1211,21 @@ func ExportCIDRs(dataDir, cidrs string) (string, error) {
 // count reported is the IPv4 subnet count — so the picker never offers an ASN
 // that would fail to expand.
 func ASNSearch(dataDir, query string) (string, error) {
+	return asnSearchRows(dataDir, query, 0)
+}
+
+func asnSearchRows(dataDir, query string, limit int) (string, error) {
 	eng := asn.NewASNEngine(dataDir)
-	if err := eng.Load(); err != nil {
+	if err := eng.LoadIPv4(); err != nil {
 		return "", err
 	}
-	groups, err := eng.SearchGroups(query)
+	groups, err := eng.SearchSummaries(query, limit)
 	if err != nil {
 		return "", err
 	}
 	var b strings.Builder
 	for _, g := range groups {
-		v4 := 0
-		for _, c := range g.CIDRs {
-			if !strings.Contains(c, ":") {
-				v4++
-			}
-		}
-		if v4 == 0 {
-			continue // IPv6-only ASN — not scannable here, hide it
-		}
-		fmt.Fprintf(&b, "%s\t%s\t%d\n", g.ASN, g.Name, v4)
+		fmt.Fprintf(&b, "%s\t%s\t%d\n", g.ASN, g.Name, g.SubnetCount)
 	}
 	return b.String(), nil
 }

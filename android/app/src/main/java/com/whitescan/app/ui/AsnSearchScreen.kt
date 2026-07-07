@@ -21,16 +21,22 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.whitescan.engine.mobile.Mobile
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 data class AsnRow(val asn: String, val name: String, val subnets: Int)
+
+private const val CONSTRAINED_ASN_SEARCH_LIMIT = 80
+private const val CONSTRAINED_ASN_MIN_QUERY_CHARS = 2
+private const val ASN_SEARCH_DEBOUNCE_MS = 300L
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun AsnSearchScreen(
     dataDir: String,
     confirmLabel: String = "Use selection",
+    constrainedDevice: Boolean = false,
     // Returns the expanded IPv4 CIDRs for the chosen ASNs (ready to scan/export).
     onSelected: (cidrs: String) -> Unit,
     onCancel: () -> Unit,
@@ -43,6 +49,7 @@ fun AsnSearchScreen(
     val selected = remember { mutableStateMapOf<String, AsnRow>() }
     val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
+    val trimmedQuery = query.trim()
 
     // Auto-focus search field so keyboard pops up immediately
     val focusRequester = remember { FocusRequester() }
@@ -50,14 +57,28 @@ fun AsnSearchScreen(
         focusRequester.requestFocus()
     }
 
-    LaunchedEffect(query) {
+    LaunchedEffect(trimmedQuery, constrainedDevice) {
+        if (constrainedDevice &&
+            trimmedQuery != "*" &&
+            trimmedQuery.length < CONSTRAINED_ASN_MIN_QUERY_CHARS
+        ) {
+            rows = emptyList()
+            loading = false
+            return@LaunchedEffect
+        }
+
+        delay(ASN_SEARCH_DEBOUNCE_MS)
         loading = true
         rows = withContext(Dispatchers.IO) {
             runCatching {
-                Mobile.asnSearch(dataDir, query.ifBlank { "*" })
+                val search = trimmedQuery.ifBlank { "*" }
+                Mobile.asnSearch(dataDir, search)
                     .trimEnd()
                     .lines()
                     .filter { it.isNotBlank() }
+                    .let { lines ->
+                        if (constrainedDevice) lines.take(CONSTRAINED_ASN_SEARCH_LIMIT) else lines
+                    }
                     .mapNotNull { line ->
                         val parts = line.split('\t')
                         if (parts.size >= 3) AsnRow(parts[0], parts[1], parts[2].toIntOrNull() ?: 0)
@@ -112,16 +133,19 @@ fun AsnSearchScreen(
                                 val ids = selected.values.joinToString("\n") { it.asn }
                                 scope.launch {
                                     expanding = true
-                                    val cidrs = withContext(Dispatchers.IO) {
+                                    val result = withContext(Dispatchers.IO) {
                                         runCatching { Mobile.expandASNs(dataDir, ids) }
-                                            .getOrElse { e ->
-                                                expandError = e.message ?: "expand failed"; ""
-                                            }
                                     }
                                     expanding = false
-                                    if (cidrs.isNotBlank()) onSelected(cidrs)
-                                    else if (expandError == null)
+                                    val error = result.exceptionOrNull()
+                                    val cidrs = result.getOrNull().orEmpty()
+                                    if (error != null) {
+                                        expandError = error.message ?: "expand failed"
+                                    } else if (cidrs.isBlank()) {
                                         expandError = "No IPv4 ranges found for the selected ASN(s)"
+                                    } else {
+                                        onSelected(cidrs)
+                                    }
                                 }
                             },
                             modifier = Modifier.height(44.dp),
@@ -157,6 +181,10 @@ fun AsnSearchScreen(
         if (loading) {
             Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
+            }
+        } else if (constrainedDevice && rows.isEmpty() && trimmedQuery.isBlank()) {
+            Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                Text("Search to load ASN matches", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         } else if (rows.isEmpty() && query.isNotBlank()) {
             Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {

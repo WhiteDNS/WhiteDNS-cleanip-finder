@@ -3,6 +3,7 @@ package bundledata
 import (
 	"embed"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,8 +23,16 @@ func ASNIPv4CSV() ([]byte, error) {
 	return bundledFS.ReadFile(embeddedASNv4Path)
 }
 
+func ASNIPv4CSVReader() (io.ReadCloser, error) {
+	return bundledFS.Open(embeddedASNv4Path)
+}
+
 func ASNIPv6CSV() ([]byte, error) {
 	return bundledFS.ReadFile(embeddedASNv6Path)
+}
+
+func ASNIPv6CSVReader() (io.ReadCloser, error) {
+	return bundledFS.Open(embeddedASNv6Path)
 }
 
 func LoadSNIPatterns() ([]string, error) {

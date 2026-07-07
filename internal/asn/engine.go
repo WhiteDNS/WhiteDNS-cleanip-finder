@@ -2,7 +2,6 @@ package asn
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/csv"
 	"fmt"
 	"io"
@@ -34,13 +33,24 @@ type ASNGroup struct {
 	CIDRs       []string
 }
 
+// ASNSummary is a lightweight grouped ASN row without the CIDR list. Mobile
+// picker searches use this to avoid holding the full subnet database twice.
+type ASNSummary struct {
+	ASN         string
+	Name        string
+	Type        string
+	SubnetCount int
+}
+
 // ASNEngine manages ASN lookups
 type ASNEngine struct {
-	mu      sync.RWMutex
-	dataV4  map[int][]asnEntry // first octet → entries
-	dataV6  []asnEntry
-	loaded  bool
-	asnPath string
+	mu       sync.RWMutex
+	dataV4   map[int][]asnEntry // first octet → entries
+	dataV6   []asnEntry
+	loadedV4 bool
+	loadedV6 bool
+	loaded   bool
+	asnPath  string
 }
 
 type asnEntry struct {
@@ -117,30 +127,59 @@ func (e *ASNEngine) Load() error {
 		return nil
 	}
 
-	if data, err := bundledata.ASNIPv4CSV(); err == nil {
-		if err := e.loadCSVReader(bytes.NewReader(data), true); err != nil {
+	if !e.loadedV4 {
+		e.loadIPv4Locked()
+	}
+
+	if !e.loadedV6 {
+		e.loadIPv6Locked()
+	}
+
+	e.loaded = true
+	return nil
+}
+
+// LoadIPv4 loads only the IPv4 ASN database. Mobile scanner selectors are
+// IPv4-only, so this avoids unnecessary IPv6 parsing on constrained devices.
+func (e *ASNEngine) LoadIPv4() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.loadedV4 {
+		return nil
+	}
+	e.loadIPv4Locked()
+	return nil
+}
+
+func (e *ASNEngine) loadIPv4Locked() {
+	if reader, err := bundledata.ASNIPv4CSVReader(); err == nil {
+		if err := e.loadCSVReader(reader, true); err != nil {
 			fmt.Printf("[!] Warning: Could not load bundled IPv4 ASN data: %v\n", err)
 		}
+		_ = reader.Close()
 	} else {
 		v4Path := filepath.Join(e.asnPath, "filtered_ipv4.csv")
 		if err := e.loadCSV(v4Path, true); err != nil {
 			fmt.Printf("[!] Warning: Could not load IPv4 ASN data: %v\n", err)
 		}
 	}
+	e.loadedV4 = true
+}
 
-	if data, err := bundledata.ASNIPv6CSV(); err == nil {
-		if err := e.loadCSVReader(bytes.NewReader(data), false); err != nil {
+func (e *ASNEngine) loadIPv6Locked() {
+	if reader, err := bundledata.ASNIPv6CSVReader(); err == nil {
+		if err := e.loadCSVReader(reader, false); err != nil {
 			fmt.Printf("[!] Warning: Could not load bundled IPv6 ASN data: %v\n", err)
 		}
+		_ = reader.Close()
 	} else {
 		v6Path := filepath.Join(e.asnPath, "filtered_ipv6.csv")
 		if err := e.loadCSV(v6Path, false); err != nil {
 			fmt.Printf("[!] Warning: Could not load IPv6 ASN data: %v\n", err)
 		}
 	}
-
-	e.loaded = true
-	return nil
+	e.loadedV6 = true
 }
 
 // loadCSV loads a CSV file into the engine
@@ -340,6 +379,112 @@ func (e *ASNEngine) SearchByPattern(pattern string) ([]*ASNInfo, error) {
 	}
 
 	return results, nil
+}
+
+// SearchSummaries returns grouped IPv4 ASN matches without carrying every CIDR
+// in the result. A positive limit returns only the top N groups by subnet count.
+func (e *ASNEngine) SearchSummaries(query string, limit int) ([]ASNSummary, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	if !e.loadedV4 {
+		return nil, fmt.Errorf("ASN IPv4 data not loaded")
+	}
+
+	query = strings.TrimSpace(query)
+	matcher, err := compileASNQuery(query)
+	if err != nil {
+		return nil, err
+	}
+
+	groups := make(map[string]*ASNSummary)
+	for _, entries := range e.dataV4 {
+		for _, entry := range entries {
+			if !matcher(entry.asn, entry.name) {
+				continue
+			}
+			summary, ok := groups[entry.asn]
+			if !ok {
+				summary = &ASNSummary{ASN: entry.asn, Name: entry.name, Type: entry.asnType}
+				groups[entry.asn] = summary
+			}
+			if summary.Name == "" && entry.name != "" {
+				summary.Name = entry.name
+			}
+			if summary.Type == "" && entry.asnType != "" {
+				summary.Type = entry.asnType
+			}
+			summary.SubnetCount++
+		}
+	}
+
+	results := make([]ASNSummary, 0, len(groups))
+	for _, summary := range groups {
+		results = append(results, *summary)
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].SubnetCount == results[j].SubnetCount {
+			return results[i].ASN < results[j].ASN
+		}
+		return results[i].SubnetCount > results[j].SubnetCount
+	})
+
+	if limit > 0 && len(results) > limit {
+		results = results[:limit]
+	}
+
+	return results, nil
+}
+
+// NormalizeASN normalizes an ASN identifier for exact comparison.
+func NormalizeASN(s string) string {
+	s = strings.ToUpper(strings.TrimSpace(s))
+	return strings.TrimPrefix(s, "AS")
+}
+
+// IPv4CIDRsForASNs expands exact ASN identifiers to their IPv4 CIDRs in one
+// pass. This avoids repeated full-database searches from mobile selection flows.
+func (e *ASNEngine) IPv4CIDRsForASNs(asnIDs []string) ([]string, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	if !e.loadedV4 {
+		return nil, fmt.Errorf("ASN IPv4 data not loaded")
+	}
+
+	wanted := make(map[string]struct{}, len(asnIDs))
+	for _, id := range asnIDs {
+		id = NormalizeASN(id)
+		if id != "" {
+			wanted[id] = struct{}{}
+		}
+	}
+	if len(wanted) == 0 {
+		return nil, fmt.Errorf("no ASNs given")
+	}
+
+	seen := make(map[string]struct{})
+	cidrs := make([]string, 0)
+	for _, entries := range e.dataV4 {
+		for _, entry := range entries {
+			if _, ok := wanted[NormalizeASN(entry.asn)]; !ok {
+				continue
+			}
+			cidr := entry.cidrString
+			if cidr == "" || strings.Contains(cidr, ":") {
+				continue
+			}
+			if _, ok := seen[cidr]; ok {
+				continue
+			}
+			seen[cidr] = struct{}{}
+			cidrs = append(cidrs, cidr)
+		}
+	}
+
+	sort.Strings(cidrs)
+	return cidrs, nil
 }
 
 // SearchGroups returns grouped ASN matches for the interactive selector.
