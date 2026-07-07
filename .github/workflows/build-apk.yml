@@ -154,25 +154,7 @@ jobs:
           path: android/release-artifacts/*
           retention-days: 30
 
-      # â”€â”€ 11. GitHub Release (only on v* tags) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      - name: Get short SHA
-        id: sha
-        run: echo "short=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
-
-      # Only publish a Release on real tag pushes. On a manual workflow_dispatch,
-      # github.ref_name is the branch ("main") â€” creating a tag from it collides
-      # with the branch and breaks `git push`. Guard against that.
-      # Attach ONLY the APKs to the public Release. The .aab (Play Store upload
-      # format, not directly installable by users) stays in the private 30-day
-      # workflow artifact above for the maintainer to download and upload to the
-      # Play Console.
-      - name: Upload to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: "WhiteDNS ${{ github.ref_name }}"
-          body: "APK build for ${{ github.ref_name }} (${{ github.sha }})"
-          files: android/release-artifacts/*.apk
-          fail_on_unmatched_files: false
+      # No automatic GitHub Release on this (org) repo: releases here are created
+      # manually by the maintainer. CI still builds and signs the APK/AAB and
+      # keeps them in the 30-day workflow artifact above to download and attach.
 
