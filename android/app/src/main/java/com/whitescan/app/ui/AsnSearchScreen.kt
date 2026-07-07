@@ -5,6 +5,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckBox
 import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
@@ -30,6 +31,7 @@ data class AsnRow(val asn: String, val name: String, val subnets: Int)
 private const val CONSTRAINED_ASN_SEARCH_LIMIT = 80
 private const val CONSTRAINED_ASN_MIN_QUERY_CHARS = 2
 private const val ASN_SEARCH_DEBOUNCE_MS = 300L
+private const val ASN_PAGE_QUERY_PREFIX = "__WHITEDNS_ASN_PAGE__\t"
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -44,12 +46,16 @@ fun AsnSearchScreen(
     var query by remember { mutableStateOf("") }
     var rows by remember { mutableStateOf<List<AsnRow>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
+    var loadingMore by remember { mutableStateOf(false) }
+    var nextOffset by remember { mutableStateOf(0) }
+    var hasMoreRows by remember { mutableStateOf(false) }
     var expanding by remember { mutableStateOf(false) }
     var expandError by remember { mutableStateOf<String?>(null) }
     val selected = remember { mutableStateMapOf<String, AsnRow>() }
     val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
     val trimmedQuery = query.trim()
+    val listState = rememberLazyListState()
 
     // Auto-focus search field so keyboard pops up immediately
     val focusRequester = remember { FocusRequester() }
@@ -70,24 +76,37 @@ fun AsnSearchScreen(
 
         loading = true
         delay(ASN_SEARCH_DEBOUNCE_MS)
-        rows = withContext(Dispatchers.IO) {
-            runCatching {
-                val search = trimmedQuery.ifBlank { "*" }
-                Mobile.asnSearch(dataDir, search)
-                    .trimEnd()
-                    .lines()
-                    .filter { it.isNotBlank() }
-                    .let { lines ->
-                        if (constrainedDevice) lines.take(CONSTRAINED_ASN_SEARCH_LIMIT) else lines
-                    }
-                    .mapNotNull { line ->
-                        val parts = line.split('\t')
-                        if (parts.size >= 3) AsnRow(parts[0], parts[1], parts[2].toIntOrNull() ?: 0)
-                        else null
-                    }
-            }.getOrDefault(emptyList())
-        }
+        val loaded = loadAsnRows(dataDir, trimmedQuery, constrainedDevice, 0)
+        rows = loaded
+        nextOffset = if (constrainedDevice) loaded.size else 0
+        hasMoreRows = constrainedDevice && loaded.size == CONSTRAINED_ASN_SEARCH_LIMIT
         loading = false
+    }
+
+    LaunchedEffect(trimmedQuery, constrainedDevice) {
+        if (!constrainedDevice) return@LaunchedEffect
+        snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
+            .collect { lastVisible ->
+                val shouldLoad =
+                    hasMoreRows &&
+                    !loading &&
+                    !loadingMore &&
+                    rows.isNotEmpty() &&
+                    lastVisible >= rows.lastIndex - 8
+                if (!shouldLoad) return@collect
+
+                loadingMore = true
+                val loaded = loadAsnRows(dataDir, trimmedQuery, constrainedDevice, nextOffset)
+                if (loaded.isEmpty()) {
+                    hasMoreRows = false
+                } else {
+                    val seen = rows.mapTo(mutableSetOf()) { it.asn }
+                    rows = rows + loaded.filterNot { seen.contains(it.asn) }
+                    nextOffset += loaded.size
+                    hasMoreRows = loaded.size == CONSTRAINED_ASN_SEARCH_LIMIT
+                }
+                loadingMore = false
+            }
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -203,7 +222,10 @@ fun AsnSearchScreen(
             )
         }
 
-        LazyColumn(modifier = Modifier.weight(1f)) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.weight(1f),
+        ) {
             items(rows, key = { it.asn }) { row ->
                 val isSelected = selected.containsKey(row.asn)
                 Row(
@@ -250,6 +272,13 @@ fun AsnSearchScreen(
                 }
                 HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
             }
+            if (loadingMore) {
+                item(key = "asn-loading-more") {
+                    Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    }
+                }
+            }
         }
 
         TextButton(
@@ -260,4 +289,29 @@ fun AsnSearchScreen(
                 .height(48.dp),
         ) { Text("Cancel") }
     }
+}
+
+private suspend fun loadAsnRows(
+    dataDir: String,
+    query: String,
+    constrainedDevice: Boolean,
+    offset: Int,
+): List<AsnRow> = withContext(Dispatchers.IO) {
+    runCatching {
+        val search = query.ifBlank { "*" }
+        val engineQuery =
+            if (constrainedDevice)
+                "$ASN_PAGE_QUERY_PREFIX$offset\t$CONSTRAINED_ASN_SEARCH_LIMIT\t$search"
+            else
+                search
+        Mobile.asnSearch(dataDir, engineQuery)
+            .trimEnd()
+            .lines()
+            .filter { it.isNotBlank() }
+            .mapNotNull { line ->
+                val parts = line.split('\t')
+                if (parts.size >= 3) AsnRow(parts[0], parts[1], parts[2].toIntOrNull() ?: 0)
+                else null
+            }
+    }.getOrDefault(emptyList())
 }

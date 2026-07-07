@@ -145,13 +145,50 @@ func TestASNSearchAndExpand(t *testing.T) {
 }
 
 func TestASNSearchRowsLimit(t *testing.T) {
-	rows, err := asnSearchRows(t.TempDir(), "*", 3)
+	rows, err := asnSearchRows(t.TempDir(), "*", 3, 0)
 	if err != nil {
 		t.Fatalf("asnSearchRows failed: %v", err)
 	}
 	lines := strings.FieldsFunc(strings.TrimSpace(rows), func(r rune) bool { return r == '\n' || r == '\r' })
 	if len(lines) != 3 {
 		t.Fatalf("expected 3 rows, got %d: %q", len(lines), rows)
+	}
+}
+
+func TestASNSearchRowsOffset(t *testing.T) {
+	firstRows, err := asnSearchRows(t.TempDir(), "*", 3, 0)
+	if err != nil {
+		t.Fatalf("first page failed: %v", err)
+	}
+	nextRows, err := asnSearchRows(t.TempDir(), "*", 3, 3)
+	if err != nil {
+		t.Fatalf("second page failed: %v", err)
+	}
+	first := strings.FieldsFunc(strings.TrimSpace(firstRows), func(r rune) bool { return r == '\n' || r == '\r' })
+	next := strings.FieldsFunc(strings.TrimSpace(nextRows), func(r rune) bool { return r == '\n' || r == '\r' })
+	if len(first) != 3 || len(next) != 3 {
+		t.Fatalf("expected two 3-row pages, got %d and %d", len(first), len(next))
+	}
+	if first[0] == next[0] {
+		t.Fatalf("offset did not advance: first=%q next=%q", first[0], next[0])
+	}
+}
+
+func TestParseASNSearchPageQuery(t *testing.T) {
+	query, offset, limit := parseASNSearchQuery(asnPageQueryPrefix+"80\t80\t*", 0)
+	if query != "*" || offset != 80 || limit != 80 {
+		t.Fatalf("got query=%q offset=%d limit=%d", query, offset, limit)
+	}
+}
+
+func TestASNSearchPageQuery(t *testing.T) {
+	rows, err := ASNSearch(t.TempDir(), asnPageQueryPrefix+"3\t3\t*")
+	if err != nil {
+		t.Fatalf("ASNSearch page query failed: %v", err)
+	}
+	lines := strings.FieldsFunc(strings.TrimSpace(rows), func(r rune) bool { return r == '\n' || r == '\r' })
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 paged rows, got %d: %q", len(lines), rows)
 	}
 }
 

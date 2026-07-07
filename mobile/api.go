@@ -1210,6 +1210,40 @@ func ExportCIDRs(dataDir, cidrs string) (string, error) {
 	return path, err
 }
 
+const asnPageQueryPrefix = "__WHITEDNS_ASN_PAGE__\t"
+
+func parseASNSearchQuery(query string, defaultLimit int) (string, int, int) {
+	if !strings.HasPrefix(query, asnPageQueryPrefix) {
+		return query, 0, defaultLimit
+	}
+
+	rest := strings.TrimPrefix(query, asnPageQueryPrefix)
+	offsetText, rest, ok := strings.Cut(rest, "\t")
+	if !ok {
+		return query, 0, defaultLimit
+	}
+	limitText, actualQuery, ok := strings.Cut(rest, "\t")
+	if !ok {
+		return query, 0, defaultLimit
+	}
+
+	offset, err := strconv.Atoi(offsetText)
+	if err != nil || offset < 0 {
+		offset = 0
+	}
+	limit, err := strconv.Atoi(limitText)
+	if err != nil || limit <= 0 {
+		limit = defaultLimit
+	}
+	if limit <= 0 {
+		limit = liteASNSearchLimit
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	return actualQuery, offset, limit
+}
+
 // ASNSearch returns matching ASNs as newline-separated "ASN\tName\tipv4Count"
 // rows. ASNs with no IPv4 CIDRs are omitted (the scanner is IPv4-only), and the
 // count reported is the IPv4 subnet count — so the picker never offers an ASN
@@ -1219,17 +1253,32 @@ func ASNSearch(dataDir, query string) (string, error) {
 	if forceLiteRuntime() {
 		limit = liteASNSearchLimit
 	}
-	return asnSearchRows(dataDir, query, limit)
+	query, offset, limit := parseASNSearchQuery(query, limit)
+	return asnSearchRows(dataDir, query, limit, offset)
 }
 
-func asnSearchRows(dataDir, query string, limit int) (string, error) {
+func asnSearchRows(dataDir, query string, limit int, offset int) (string, error) {
 	eng := asn.NewASNEngine(dataDir)
 	if err := eng.LoadIPv4(); err != nil {
 		return "", err
 	}
-	groups, err := eng.SearchSummaries(query, limit)
+	searchLimit := limit
+	if offset > 0 && limit > 0 {
+		searchLimit = offset + limit
+	}
+	groups, err := eng.SearchSummaries(query, searchLimit)
 	if err != nil {
 		return "", err
+	}
+	if offset > 0 {
+		if offset >= len(groups) {
+			groups = nil
+		} else {
+			groups = groups[offset:]
+		}
+	}
+	if limit > 0 && len(groups) > limit {
+		groups = groups[:limit]
 	}
 	var b strings.Builder
 	for _, g := range groups {
