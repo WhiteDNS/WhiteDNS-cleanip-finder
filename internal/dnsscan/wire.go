@@ -116,7 +116,7 @@ func encodeEDNSOpt() []byte {
 	return []byte{
 		0x00,       // Root domain name
 		0x00, 0x29, // TYPE: OPT (41)
-		byte(ednsUDPPayloadSize >> 8), byte(ednsUDPPayloadSize), // CLASS: UDP payload size
+		byte(ednsUDPPayloadSize >> 8), byte(ednsUDPPayloadSize & 0xFF), // CLASS: UDP payload size
 		0x00,       // Extended RCODE
 		0x00,       // EDNS version 0
 		0x00, 0x00, // Z flags
