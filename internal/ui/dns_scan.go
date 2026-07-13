@@ -393,7 +393,7 @@ func (m tuiModel) cmdDNSScan(targets []string) tea.Cmd {
 				trySend(logMsg{text: "[DNS] report write failed: " + err.Error()})
 			} else {
 				trySend(logMsg{text: "[DNS] reports written to " + paths.Dir})
-				trySend(logMsg{text: "    " + filepath.Base(paths.Full) + " / " + filepath.Base(paths.CSV) + " / " + filepath.Base(paths.XLSX) + " / " + filepath.Base(paths.HTML) + " / " + filepath.Base(paths.JSON)})
+				trySend(logMsg{text: "    " + filepath.Base(paths.Full) + " / " + filepath.Base(paths.Passed) + " / " + filepath.Base(paths.CSV) + " / " + filepath.Base(paths.XLSX) + " / " + filepath.Base(paths.HTML) + " / " + filepath.Base(paths.JSON)})
 			}
 
 			// Build the on-screen shortlist (tunnel-ready, best score first).

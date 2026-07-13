@@ -20,6 +20,7 @@ type ReportPaths struct {
 	Dir         string
 	Full        string // human-readable per-resolver + header dump
 	TunnelReady string // tunnel-ready shortlist
+	Passed      string // plain IP list of clean (valid) resolvers, one per line
 	CSV         string
 	HTML        string // colour-coded per-status table (opens in browser/Excel)
 	XLSX        string // real spreadsheet with per-status cell fills
@@ -62,6 +63,10 @@ func WriteReports(dir string, results []ResolverResult) (ReportPaths, error) {
 	}
 	paths.TunnelReady = filepath.Join(dir, fmt.Sprintf("tunnel_ready_%s.txt", ts))
 	if err := writeTunnelReport(paths.TunnelReady, sorted); err != nil {
+		return paths, err
+	}
+	paths.Passed = filepath.Join(dir, fmt.Sprintf("passed_clean_resolvers_%s.txt", ts))
+	if err := writePassedList(paths.Passed, sorted); err != nil {
 		return paths, err
 	}
 	paths.CSV = filepath.Join(dir, fmt.Sprintf("resolvers_%s.csv", ts))
@@ -125,6 +130,19 @@ func writeTunnelReport(path string, results []ResolverResult) error {
 			r.IP, r.Score, r.Poisoned, r.Transparent, r.BestLatency.Milliseconds())
 	}
 	fmt.Fprintf(&b, "\nTotal tunnel-ready: %d\n", count)
+	return os.WriteFile(path, []byte(b.String()), 0o644)
+}
+
+// writePassedList dumps just the IPs of clean (valid) resolvers — one per line,
+// no headers or extra text — so the passed list can be pasted straight into a
+// client/config. "Clean" = responded honestly (not poison / hijack / invalid).
+func writePassedList(path string, results []ResolverResult) error {
+	var b strings.Builder
+	for _, r := range results {
+		if r.Status == StatusValid {
+			b.WriteString(r.IP + "\n")
+		}
+	}
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
 
@@ -279,17 +297,19 @@ func ynb(v bool) string {
 // by resolver status: poison=purple, hijack=yellow, valid=green, invalid=red.
 // It opens in Excel/LibreOffice/Google Sheets with the fills intact.
 
-// xlsxStatusStyle maps a status to the cellXfs style index defined in xlsxStyles.
-func xlsxStatusStyle(status string) int {
+// xlsxStatusStyle maps a status to its two cellXfs style indices (left-aligned
+// for text columns, centre-aligned for flag/number columns) defined in
+// xlsxStyles. Both carry the status fill colour.
+func xlsxStatusStyle(status string) (left, center int) {
 	switch status {
 	case StatusValid:
-		return 2 // green
+		return 2, 3 // green
 	case StatusPoison:
-		return 3 // purple
+		return 4, 5 // purple
 	case StatusHijack:
-		return 4 // yellow
+		return 6, 7 // yellow
 	default:
-		return 5 // red (invalid)
+		return 8, 9 // red (invalid)
 	}
 }
 
@@ -308,38 +328,61 @@ func writeXLSX(path string, results []ResolverResult) error {
 	headers := []string{"IP", "Status", "Score", "RA", "EDNS0", "TXT-pass", "UDP", "TCP",
 		"NS", "AR", "Poison", "Poison IP", "Hijack", "Hijack IP", "Tunnel", "ms", "Reason"}
 
+	lastRow := len(results) + 1
+	sheetRange := fmt.Sprintf("A1:%s%d", xlsxCol(len(headers)-1), lastRow)
+
 	var sheet bytes.Buffer
 	sheet.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`)
-	sheet.WriteString(`<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>`)
-	sheet.WriteString(`<row r="1">`)
+	sheet.WriteString(`<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">`)
+	fmt.Fprintf(&sheet, `<dimension ref="%s"/>`, sheetRange)
+	// Freeze the header row so it stays visible while scrolling.
+	sheet.WriteString(`<sheetViews><sheetView tabSelected="1" workbookViewId="0">` +
+		`<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>` +
+		`<selection pane="bottomLeft" activeCell="A2" sqref="A2"/></sheetView></sheetViews>`)
+	sheet.WriteString(`<sheetFormatPr defaultRowHeight="15"/>`)
+	sheet.WriteString(xlsxCols)
+
+	sheet.WriteString(`<sheetData>`)
+	sheet.WriteString(`<row r="1" ht="18" customHeight="1">`)
 	for c, h := range headers {
 		xlsxStr(&sheet, c, 1, 1, h) // header style
 	}
 	sheet.WriteString(`</row>`)
+	// Columns that hold free text / addresses read best left-aligned; the compact
+	// flag and number columns read best centred.
+	leftCols := map[int]bool{0: true, 1: true, 11: true, 13: true, 16: true}
 	for i, r := range results {
 		row := i + 2
-		s := xlsxStatusStyle(r.Status)
+		left, center := xlsxStatusStyle(r.Status)
+		st := func(col int) int {
+			if leftCols[col] {
+				return left
+			}
+			return center
+		}
 		fmt.Fprintf(&sheet, `<row r="%d">`, row)
-		xlsxStr(&sheet, 0, row, s, r.IP)
-		xlsxStr(&sheet, 1, row, s, strings.ToUpper(r.Status))
-		xlsxNum(&sheet, 2, row, s, int64(r.Score))
-		xlsxStr(&sheet, 3, row, s, ynb(r.RA))
-		xlsxStr(&sheet, 4, row, s, ynb(r.EDNS))
-		xlsxStr(&sheet, 5, row, s, ynb(r.TxtPass))
-		xlsxStr(&sheet, 6, row, s, ynb(r.UDPOK))
-		xlsxStr(&sheet, 7, row, s, ynb(r.TCPOK))
-		xlsxNum(&sheet, 8, row, s, int64(r.NSCount))
-		xlsxNum(&sheet, 9, row, s, int64(r.ARCount))
-		xlsxStr(&sheet, 10, row, s, ynb(r.Poisoned))
-		xlsxStr(&sheet, 11, row, s, r.PoisonIP)
-		xlsxStr(&sheet, 12, row, s, ynb(r.Transparent))
-		xlsxStr(&sheet, 13, row, s, r.HijackIP)
-		xlsxStr(&sheet, 14, row, s, ynb(r.TunnelReady))
-		xlsxNum(&sheet, 15, row, s, r.BestLatency.Milliseconds())
-		xlsxStr(&sheet, 16, row, s, r.TunnelReason)
+		xlsxStr(&sheet, 0, row, st(0), r.IP)
+		xlsxStr(&sheet, 1, row, st(1), strings.ToUpper(r.Status))
+		xlsxNum(&sheet, 2, row, st(2), int64(r.Score))
+		xlsxStr(&sheet, 3, row, st(3), ynb(r.RA))
+		xlsxStr(&sheet, 4, row, st(4), ynb(r.EDNS))
+		xlsxStr(&sheet, 5, row, st(5), ynb(r.TxtPass))
+		xlsxStr(&sheet, 6, row, st(6), ynb(r.UDPOK))
+		xlsxStr(&sheet, 7, row, st(7), ynb(r.TCPOK))
+		xlsxNum(&sheet, 8, row, st(8), int64(r.NSCount))
+		xlsxNum(&sheet, 9, row, st(9), int64(r.ARCount))
+		xlsxStr(&sheet, 10, row, st(10), ynb(r.Poisoned))
+		xlsxStr(&sheet, 11, row, st(11), r.PoisonIP)
+		xlsxStr(&sheet, 12, row, st(12), ynb(r.Transparent))
+		xlsxStr(&sheet, 13, row, st(13), r.HijackIP)
+		xlsxStr(&sheet, 14, row, st(14), ynb(r.TunnelReady))
+		xlsxNum(&sheet, 15, row, st(15), r.BestLatency.Milliseconds())
+		xlsxStr(&sheet, 16, row, st(16), r.TunnelReason)
 		sheet.WriteString(`</row>`)
 	}
-	sheet.WriteString(`</sheetData></worksheet>`)
+	sheet.WriteString(`</sheetData>`)
+	fmt.Fprintf(&sheet, `<autoFilter ref="%s"/>`, sheetRange)
+	sheet.WriteString(`</worksheet>`)
 
 	parts := []struct{ name, body string }{
 		{"[Content_Types].xml", xlsxContentTypes},
@@ -390,8 +433,29 @@ const xlsxWorkbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?
 	`<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>` +
 	`</Relationships>`
 
-// xlsxStyles: fonts, four status fills + header fill, and the cellXfs indices
-// (0 default, 1 header, 2 green, 3 purple, 4 yellow, 5 red) referenced by cells.
+// xlsxCols sets sensible column widths so IPs, block-page addresses, and the
+// reason text are fully visible without manual resizing.
+const xlsxCols = `<cols>` +
+	`<col min="1" max="1" width="18" customWidth="1"/>` + // IP
+	`<col min="2" max="2" width="10" customWidth="1"/>` + // Status
+	`<col min="3" max="3" width="7" customWidth="1"/>` + // Score
+	`<col min="4" max="5" width="8" customWidth="1"/>` + // RA, EDNS0
+	`<col min="6" max="6" width="10" customWidth="1"/>` + // TXT-pass
+	`<col min="7" max="8" width="6" customWidth="1"/>` + // UDP, TCP
+	`<col min="9" max="10" width="5" customWidth="1"/>` + // NS, AR
+	`<col min="11" max="11" width="8" customWidth="1"/>` + // Poison
+	`<col min="12" max="12" width="22" customWidth="1"/>` + // Poison IP
+	`<col min="13" max="13" width="8" customWidth="1"/>` + // Hijack
+	`<col min="14" max="14" width="22" customWidth="1"/>` + // Hijack IP
+	`<col min="15" max="15" width="8" customWidth="1"/>` + // Tunnel
+	`<col min="16" max="16" width="7" customWidth="1"/>` + // ms
+	`<col min="17" max="17" width="46" customWidth="1"/>` + // Reason
+	`</cols>`
+
+// xlsxStyles defines fonts, the four status fills + header fill, and the cellXfs
+// referenced by cells: 0 default, 1 header (bold/centred), then per status a
+// left-aligned and a centre-aligned variant — green 2/3, purple 4/5, yellow 6/7,
+// red 8/9.
 const xlsxStyles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
 	`<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
 	`<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font>` +
@@ -407,11 +471,15 @@ const xlsxStyles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
 	`</fills>` +
 	`<borders count="1"><border/></borders>` +
 	`<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>` +
-	`<cellXfs count="6">` +
+	`<cellXfs count="10">` +
 	`<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>` +
-	`<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>` +
-	`<xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1"/>` +
-	`<xf numFmtId="0" fontId="0" fillId="4" borderId="0" xfId="0" applyFill="1"/>` +
-	`<xf numFmtId="0" fontId="0" fillId="5" borderId="0" xfId="0" applyFill="1"/>` +
-	`<xf numFmtId="0" fontId="0" fillId="6" borderId="0" xfId="0" applyFill="1"/>` +
+	`<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>` +
+	`<xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>` +
+	`<xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>` +
+	`<xf numFmtId="0" fontId="0" fillId="4" borderId="0" xfId="0" applyFill="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>` +
+	`<xf numFmtId="0" fontId="0" fillId="4" borderId="0" xfId="0" applyFill="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>` +
+	`<xf numFmtId="0" fontId="0" fillId="5" borderId="0" xfId="0" applyFill="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>` +
+	`<xf numFmtId="0" fontId="0" fillId="5" borderId="0" xfId="0" applyFill="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>` +
+	`<xf numFmtId="0" fontId="0" fillId="6" borderId="0" xfId="0" applyFill="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>` +
+	`<xf numFmtId="0" fontId="0" fillId="6" borderId="0" xfId="0" applyFill="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>` +
 	`</cellXfs></styleSheet>`
