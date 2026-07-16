@@ -1245,10 +1245,27 @@ func StartDNSScan(dataDir string, cfg *ScanConfig, l ScanListener) *ScanHandle {
 		hitsTotal := 0
 		var all []dnsscan.ResolverResult
 
+		// Every other scan kind persists accepted results to disk as they arrive
+		// (resultFile.flush(), IP-scan per-chunk writes) specifically so a stopped
+		// scan or a killed app still keeps whatever was found. dnsscan.WriteReports
+		// rewrites the full report set from `all`, so calling it at chunk
+		// boundaries gives DNS scan the same guarantee: the "dns scan" folder and
+		// its files exist from the first chunk onward, not only on a clean finish.
+		outDir := filepath.Join(dataDir, "dns scan")
+		var lastSavedPath string
+		flushReports := func() {
+			if paths, err := dnsscan.WriteReports(outDir, all); err == nil {
+				lastSavedPath = paths.Full
+			} else {
+				lf.write("[DNS] report flush failed: " + err.Error())
+			}
+		}
+
 		stagedMsg := fmt.Sprintf("[DNS-SCAN-START] targets=%d staged_ips=%d protocol=%s reference=%s concurrency=%d lite=%v nearby=%v",
 			len(targets), totalIPs, protocol, reference, conc, liteMode, testNearby)
 		lf.write(stagedMsg)
 		l.OnLog(stagedMsg)
+		flushReports() // create the folder + empty reports immediately, before any resolver completes
 
 		// progress is invoked from a single goroutine per ScanResolvers call (see
 		// dnsscan.ScanResolvers doc), so hitsTotal/processedBase need no locking.
@@ -1284,6 +1301,7 @@ func StartDNSScan(dataDir string, cfg *ScanConfig, l ScanListener) *ScanHandle {
 			results := dnsscan.ScanResolvers(h.ctx, chunk, opts, makeProgress(totalIPs))
 			all = append(all, results...)
 			processedBase += len(chunk)
+			flushReports() // persist this chunk's results immediately (survives a kill)
 		}
 
 		fileScanner := bufio.NewScanner(file)
@@ -1361,6 +1379,7 @@ func StartDNSScan(dataDir string, cfg *ScanConfig, l ScanListener) *ScanHandle {
 					}
 					all = append(all, results...)
 					processedBase += len(sub)
+					flushReports()
 				}
 			}
 		}
@@ -1376,15 +1395,15 @@ func StartDNSScan(dataDir string, cfg *ScanConfig, l ScanListener) *ScanHandle {
 		lf.close()
 
 		// Whether the scan finished or was stopped, everything gathered so far is
-		// reported — a user-initiated stop is not an error (matches every other
-		// scan kind's behavior).
-		outDir := filepath.Join(dataDir, "dns scan")
-		paths, err := dnsscan.WriteReports(outDir, all)
-		if err != nil {
-			l.OnDone("", "report write failed: "+err.Error())
+		// already flushed to outDir via flushReports() — a user-initiated stop is
+		// not an error (matches every other scan kind's behavior). One final flush
+		// picks up anything scanned since the last chunk boundary.
+		flushReports()
+		if lastSavedPath == "" {
+			l.OnDone("", "report write failed")
 			return
 		}
-		l.OnDone(paths.Full, "")
+		l.OnDone(lastSavedPath, "")
 	}()
 	return h
 }
